@@ -4,7 +4,7 @@ import threading
 import os
 import random
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from flask import Flask
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -108,6 +108,9 @@ def get_profile_edit_menu():
     ]
     return InlineKeyboardMarkup(keyboard)
 
+def get_gender_keyboard():
+    return InlineKeyboardMarkup([[InlineKeyboardButton("پسر", callback_data="set_gender_پسر"), InlineKeyboardButton("دختر", callback_data="set_gender_دختر")]])
+
 # --- UTILITY & FILTERING ---
 def is_message_forbidden(text: str) -> bool:
     phone_regex = r'\+?\d[\d -]{8,12}\d'
@@ -159,7 +162,7 @@ async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def received_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data['profile_name'] = update.message.text
-    await update.message.reply_text("جنسیت خود را انتخاب کنید:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("پسر", callback_data="set_gender_پسر"), InlineKeyboardButton("دختر", callback_data="set_gender_دختر")]]))
+    await update.message.reply_text("جنسیت خود را انتخاب کنید:", reply_markup=get_gender_keyboard())
     return EDIT_GENDER
     
 async def received_gender(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -188,7 +191,10 @@ async def received_age(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             if referrer_id in user_data:
                 user_data[referrer_id]['coins'] = user_data[referrer_id].get('coins', 0) + REFERRAL_BONUS_COINS
                 user_data[referrer_id]['referrals'] = user_data[referrer_id].get('referrals', 0) + 1
-                await context.bot.send_message(referrer_id, f"🎉 تبریک! یک نفر با لینک شما عضو شد و پروفایلش را تکمیل کرد. {REFERRAL_BONUS_COINS} سکه هدیه گرفتی!")
+                try:
+                    await context.bot.send_message(referrer_id, f"🎉 تبریک! یک نفر با لینک شما عضو شد و پروفایلش را تکمیل کرد. {REFERRAL_BONUS_COINS} سکه هدیه گرفتی!")
+                except TelegramError as e:
+                    logger.warning(f"Could not send referral bonus message to {referrer_id}: {e}")
             del user_data[user_id]['referred_by']
 
         save_data(user_data, USERS_DB_FILE)
@@ -211,8 +217,11 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     text = update.message.text
 
     if is_message_forbidden(text):
-        await update.message.delete()
-        await update.message.reply_text("🚫 ارسال شماره تلفن یا آیدی در ربات ممنوع است.", quote=False)
+        try:
+            await update.message.delete()
+            await update.message.reply_text("🚫 ارسال شماره تلفن یا آیدی در ربات ممنوع است.", quote=False)
+        except TelegramError as e:
+            logger.warning(f"Could not delete forbidden message: {e}")
         return
     
     if text == "❌ قطع مکالمه":
@@ -245,40 +254,6 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("به پنل مدیریت خوش آمدید.")
     else:
         await update.message.reply_text("شما اجازه دسترسی به این بخش را ندارید.")
-
-async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = str(query.from_user.id)
-    data = query.data
-
-    if data == "my_coins":
-        coins = user_data.get(user_id, {}).get('coins', 0)
-        await query.message.reply_text(f"🪙 شما در حال حاضر {coins} سکه دارید.")
-    elif data == "daily_gift":
-        last_gift_str = user_data[user_id].get('last_daily_gift')
-        now = datetime.now()
-        if last_gift_str and now - datetime.fromisoformat(last_gift_str) < timedelta(hours=24):
-            await query.message.reply_text("شما قبلاً هدیه امروز خود را دریافت کرده‌اید!")
-        else:
-            user_data[user_id]['coins'] = user_data[user_id].get('coins', 0) + DAILY_GIFT_COINS
-            user_data[user_id]['last_daily_gift'] = now.isoformat()
-            save_data(user_data, USERS_DB_FILE)
-            await query.message.reply_text(f"🎁 تبریک! {DAILY_GIFT_COINS} سکه به حساب شما اضافه شد.")
-            await query.edit_message_reply_markup(reply_markup=get_main_menu(user_id))
-    elif data.startswith("search_"):
-        await search_partner(update, context, data.split('_')[1])
-    elif data == "invite_friends":
-        await invite_friends(update, context)
-    elif data == "my_profile":
-        await my_profile(update, context)
-    elif data == "hall_of_fame":
-        await hall_of_fame(update, context)
-    elif data == "help":
-        await help_command(update, context)
-    else:
-        await query.edit_message_text(text=f"شما دکمه {query.data} را فشار دادید.")
 
 async def search_partner(update: Update, context: ContextTypes.DEFAULT_TYPE, search_type: str):
     query = update.callback_query
@@ -340,7 +315,7 @@ async def my_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🔹 سن: {profile.get('age', 'ثبت نشده')}\n"
         f"📝 بیو: {profile.get('bio', 'ثبت نشده')}"
     )
-    await query.edit_message_text(text)
+    await query.edit_message_text(text, reply_markup=get_profile_edit_menu())
 
 async def hall_of_fame(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -377,6 +352,40 @@ async def invite_friends(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error sending invite: {e}")
         await query.message.reply_text(final_text)
 
+async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = str(query.from_user.id)
+    data = query.data
+
+    if data == "my_coins":
+        coins = user_data.get(user_id, {}).get('coins', 0)
+        await query.message.reply_text(f"🪙 شما در حال حاضر {coins} سکه دارید.")
+    elif data == "daily_gift":
+        last_gift_str = user_data[user_id].get('last_daily_gift')
+        now = datetime.now()
+        if last_gift_str and now - datetime.fromisoformat(last_gift_str) < timedelta(hours=24):
+            await query.message.reply_text("شما قبلاً هدیه امروز خود را دریافت کرده‌اید!")
+        else:
+            user_data[user_id]['coins'] = user_data[user_id].get('coins', 0) + DAILY_GIFT_COINS
+            user_data[user_id]['last_daily_gift'] = now.isoformat()
+            save_data(user_data, USERS_DB_FILE)
+            await query.message.reply_text(f"🎁 تبریک! {DAILY_GIFT_COINS} سکه به حساب شما اضافه شد.")
+            await query.edit_message_reply_markup(reply_markup=get_main_menu(user_id))
+    elif data.startswith("search_"):
+        await search_partner(update, context, data.split('_')[1])
+    elif data == "invite_friends":
+        await invite_friends(update, context)
+    elif data == "my_profile":
+        await my_profile(update, context)
+    elif data == "hall_of_fame":
+        await hall_of_fame(update, context)
+    elif data == "help":
+        await help_command(update, context)
+    else:
+        await query.edit_message_text(text=f"شما دکمه {query.data} را فشار دادید.")
+        
 # --- MAIN APPLICATION SETUP ---
 def main() -> None:
     flask_thread = threading.Thread(target=run_flask)
