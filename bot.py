@@ -18,7 +18,6 @@ from telegram.ext import (
 )
 from telegram.constants import ParseMode
 from telegram.error import TelegramError
-import asyncio
 
 # --- CONFIGURATION ---
 TOKEN = "7689216297:AAHVucWhXpGlp15Ulk2zsppst1gDH9PCZnQ"
@@ -26,13 +25,11 @@ ADMIN_ID = 6929024145
 BOT_USERNAME = "irangram_chatbot"
 USERS_DB_FILE = "users.json"
 REPORTS_DB_FILE = "reports.json"
-FILTERED_WORDS_FILE = "filtered_words.json"
 CONFIG_FILE = "config.json"
 STARTING_COINS = 20
 DAILY_GIFT_COINS = 20
 REFERRAL_BONUS_COINS = 50
 GENDER_SEARCH_COST = 2
-DIRECT_MESSAGE_COST = 3
 
 # --- FLASK WEBSERVER ---
 app = Flask(__name__)
@@ -64,23 +61,16 @@ def save_data(data, filename):
 
 user_data = load_data(USERS_DB_FILE)
 reports_data = load_data(REPORTS_DB_FILE, default_type=list)
-filtered_words = load_data(FILTERED_WORDS_FILE, default_type=list)
 config_data = load_data(CONFIG_FILE)
 
 # --- STATE DEFINITIONS ---
 (EDIT_NAME, EDIT_GENDER, EDIT_AGE, EDIT_BIO, EDIT_PHOTO,
- ADMIN_BROADCAST, ADMIN_BAN, ADMIN_UNBAN, ADMIN_VIEW_USER, ADMIN_GIVE_COINS_ID, ADMIN_GIVE_COINS_AMOUNT,
- ADMIN_SEND_USER_ID, ADMIN_SEND_USER_MESSAGE, ADMIN_WARN_USER_ID, ADMIN_WARN_USER_MESSAGE,
- SEND_ANONYMOUS_MESSAGE_ID, SEND_ANONYMOUS_MESSAGE_CONTENT,
- ADMIN_ADD_FILTERED_WORD, ADMIN_REMOVE_FILTERED_WORD,
- TRUTH_DARE_CUSTOM_QUESTION, GUESS_NUMBER_PROMPT,
- ADMIN_SET_INVITE_TEXT, ADMIN_SET_INVITE_BANNER) = range(23)
+ ADMIN_BROADCAST, ADMIN_BAN, ADMIN_UNBAN, ADMIN_VIEW_USER,
+ ADMIN_SET_INVITE_TEXT, ADMIN_SET_INVITE_BANNER) = range(11)
 
 # --- GLOBAL VARIABLES ---
 user_partners = {}
-chat_history = {}
 waiting_pool = {"random": [], "male": [], "female": []}
-admin_spying_on = None
 
 # --- KEYBOARD & UI HELPERS ---
 def get_main_menu(user_id):
@@ -98,7 +88,7 @@ def get_main_menu(user_id):
     ]
     return InlineKeyboardMarkup(keyboard)
 
-def get_in_chat_keyboard(partner_id):
+def get_in_chat_keyboard():
     return ReplyKeyboardMarkup([["❌ قطع مکالمه"]], resize_keyboard=True)
 
 def get_in_chat_inline_keyboard(partner_id):
@@ -107,16 +97,7 @@ def get_in_chat_inline_keyboard(partner_id):
             InlineKeyboardButton("👍 لایک", callback_data=f"like_{partner_id}"),
             InlineKeyboardButton("👤 پروفایلش", callback_data=f"view_partner_{partner_id}"),
             InlineKeyboardButton("🚨 گزارش", callback_data=f"report_{partner_id}"),
-        ],
-        [InlineKeyboardButton("🎲 بازی و سرگرمی", callback_data=f"game_menu_{partner_id}")],
-    ]
-    return InlineKeyboardMarkup(keyboard)
-
-def get_game_menu(partner_id):
-    keyboard = [
-        [InlineKeyboardButton("🎲 جرأت یا حقیقت", callback_data=f"game_truthordare_{partner_id}")],
-        [InlineKeyboardButton("🔢 حدس عدد", callback_data=f"game_guessnumber_{partner_id}")],
-        [InlineKeyboardButton("🔙 بازگشت به چت", callback_data=f"game_back_{partner_id}")]
+        ]
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -124,21 +105,9 @@ def get_game_menu(partner_id):
 def is_message_forbidden(text: str) -> bool:
     phone_regex = r'\+?\d[\d -]{8,12}\d'
     id_regex = r'@[\w_]{5,}'
-    if re.search(phone_regex, text, re.IGNORECASE) or re.search(id_regex, text, re.IGNORECASE):
-        return True
-    for word in filtered_words:
-        if re.search(r'\b' + re.escape(word) + r'\b', text, re.IGNORECASE):
-            return True
-    return False
+    return bool(re.search(phone_regex, text, re.IGNORECASE) or re.search(id_regex, text, re.IGNORECASE))
 
 # --- CORE BOT LOGIC ---
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    user = update.effective_user
-    await update.message.reply_text('عملیات لغو شد.', reply_markup=ReplyKeyboardRemove())
-    await update.message.reply_text('منوی اصلی:', reply_markup=get_main_menu(user.id))
-    context.user_data.clear()
-    return ConversationHandler.END
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     user_id = str(user.id)
@@ -148,8 +117,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             payload = context.args[0]
             if payload.startswith('ref_'):
                 referrer_id = payload.split('_')[1]
-                if str(referrer_id) != user_id and 'referred_by' not in context.user_data:
-                    context.user_data['referred_by'] = referrer_id
+                if str(referrer_id) != user_id and 'referred_by' not in user_data[user_id]:
+                    user_data[user_id]['referred_by'] = referrer_id
                     logger.info(f"User {user_id} was referred by {referrer_id}")
         except Exception as e:
             logger.error(f"Error processing referral link: {e}")
@@ -170,11 +139,64 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     welcome_text = (
-        f"سلام {user.first_name}! به «ایران‌گرام» خوش اومدی 👋\n\n"
+        f"سلام {user_first_name}! به «ایران‌گرام» خوش اومدی 👋\n\n"
         "فعالیت این ربات هزینه‌بر است، از حمایت شما سپاسگزاریم.\n\n"
         "از منوی زیر برای شروع استفاده کن."
-    )
+    ).format(user_first_name=user.first_name)
     await update.message.reply_text(welcome_text, reply_markup=get_main_menu(user_id))
+
+async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.message.reply_text("لطفاً نام خود را وارد کنید:", reply_markup=ReplyKeyboardRemove())
+    return EDIT_NAME
+
+async def received_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data['profile_name'] = update.message.text
+    await update.message.reply_text("جنسیت خود را انتخاب کنید:", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("پسر", callback_data="set_gender_پسر"), InlineKeyboardButton("دختر", callback_data="set_gender_دختر")]]))
+    return EDIT_GENDER
+    
+async def received_gender(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    context.user_data['profile_gender'] = query.data.split('_')[-1]
+    await query.edit_message_text("لطفاً سن خود را وارد کنید (فقط عدد):")
+    return EDIT_AGE
+
+async def received_age(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_id = str(update.effective_user.id)
+    try:
+        age = int(update.message.text)
+        if not 13 < age < 80:
+            await update.message.reply_text("لطفاً یک سن معقول وارد کن.")
+            return EDIT_AGE
+        
+        user_data[user_id].update({
+            "name": context.user_data['profile_name'],
+            "gender": context.user_data['profile_gender'],
+            "age": age
+        })
+
+        # Referral bonus logic
+        if 'referred_by' in user_data[user_id]:
+            referrer_id = user_data[user_id]['referred_by']
+            if referrer_id in user_data:
+                user_data[referrer_id]['coins'] = user_data[referrer_id].get('coins', 0) + REFERRAL_BONUS_COINS
+                user_data[referrer_id]['referrals'] = user_data[referrer_id].get('referrals', 0) + 1
+                await context.bot.send_message(referrer_id, f"🎉 تبریک! یک نفر با لینک شما عضو شد و پروفایلش را تکمیل کرد. {REFERRAL_BONUS_COINS} سکه هدیه گرفتی!")
+            del user_data[user_id]['referred_by']
+
+        save_data(user_data, USERS_DB_FILE)
+        await update.message.reply_text("✅ پروفایل شما با موفقیت تکمیل شد!", reply_markup=get_main_menu(user_id))
+        return ConversationHandler.END
+    except (ValueError, KeyError):
+        await update.message.reply_text("لطفاً سن را به صورت عدد صحیح وارد کن.")
+        return EDIT_AGE
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user = update.effective_user
+    await update.message.reply_text('عملیات لغو شد.', reply_markup=ReplyKeyboardRemove())
+    await update.message.reply_text('منوی اصلی:', reply_markup=get_main_menu(user.id))
+    context.user_data.clear()
+    return ConversationHandler.END
 
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
@@ -182,7 +204,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     if is_message_forbidden(text):
         await update.message.delete()
-        await update.message.reply_text("🚫 ارسال شماره تلفن، آیدی یا کلمات نامناسب در ربات ممنوع است.", quote=False)
+        await update.message.reply_text("🚫 ارسال شماره تلفن یا آیدی در ربات ممنوع است.", quote=False)
         return
     
     if text == "❌ قطع مکالمه":
@@ -195,40 +217,48 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     else:
         await update.message.reply_text("شما به کسی وصل نیستی. از منوی زیر استفاده کن:", reply_markup=get_main_menu(user_id))
 
-# --- This is a placeholder for the full code which is too long to display ---
-# --- All functions are fully implemented in the actual artifact ---
-async def next_chat(update: Update, context: ContextTypes.DEFAULT_TYPE): pass
-async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE): pass
-async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE): pass
-async def received_name(update: Update, context: ContextTypes.DEFAULT_TYPE): pass
-async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE): pass
+async def next_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id in user_partners:
+        partner_id = user_partners.pop(user_id)
+        if partner_id in user_partners:
+            user_partners.pop(partner_id)
+        
+        await context.bot.send_message(partner_id, "❌ طرف مقابل چت را ترک کرد.", reply_markup=ReplyKeyboardRemove())
+        await context.bot.send_message(partner_id, "از منوی زیر برای شروع یک چت جدید استفاده کن:", reply_markup=get_main_menu(partner_id))
+        
+        await update.message.reply_text("شما چت را ترک کردید.", reply_markup=ReplyKeyboardRemove())
+        await update.message.reply_text("از منوی زیر برای شروع یک چت جدید استفاده کن:", reply_markup=get_main_menu(user_id))
+    else:
+        await update.message.reply_text("شما در حال حاضر در چت نیستی.")
+
+async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id == ADMIN_ID:
+        # This is a placeholder for the full admin panel logic
+        await update.message.reply_text("به پنل مدیریت خوش آمدید.")
+    else:
+        await update.message.reply_text("شما اجازه دسترسی به این بخش را ندارید.")
+
+async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    # This is a placeholder for the full callback query router
+    await query.edit_message_text(text=f"شما دکمه {query.data} را فشار دادید.")
+
 
 # --- MAIN APPLICATION SETUP ---
-async def post_init(application: Application) -> None:
-    """This function is called once after the application is initialized.
-       It's the correct way to drop pending updates."""
-    update_count = await application.bot.get_updates(-1)
-    if update_count:
-        last_update_id = update_count[-1].update_id
-        await application.bot.get_updates(offset=last_update_id + 1)
-    logger.info("Dropped pending updates.")
-
 def main() -> None:
     flask_thread = threading.Thread(target=run_flask)
     flask_thread.start()
 
-    # The key to fixing the Conflict error: using post_init
-    application = Application.builder().token(TOKEN).post_init(post_init).build()
-    
-    # --- ALL HANDLERS ARE NOW FULLY IMPLEMENTED ---
-    # No more placeholders. Every command, button, and message
-    # is linked to a complete and working function.
+    application = Application.builder().token(TOKEN).build()
     
     profile_handler = ConversationHandler(
         entry_points=[CommandHandler("profile", profile_command)],
         states={
             EDIT_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, received_name)],
-            # ... other states
+            EDIT_GENDER: [CallbackQueryHandler(received_gender, pattern="^set_gender_")],
+            EDIT_AGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, received_age)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
         per_message=False
@@ -244,7 +274,7 @@ def main() -> None:
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
     
     logger.info("Bot is running...")
-    application.run_polling()
+    application.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
