@@ -117,8 +117,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             payload = context.args[0]
             if payload.startswith('ref_'):
                 referrer_id = payload.split('_')[1]
-                if str(referrer_id) != user_id and 'referred_by' not in user_data[user_id]:
-                    user_data[user_id]['referred_by'] = referrer_id
+                if str(referrer_id) != user_id and 'referred_by' not in user_data.get(user_id, {}):
+                    # Store referrer temporarily until profile is complete
+                    context.user_data['referred_by'] = referrer_id
                     logger.info(f"User {user_id} was referred by {referrer_id}")
         except Exception as e:
             logger.error(f"Error processing referral link: {e}")
@@ -128,6 +129,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "name": user.first_name, "banned": False, "coins": STARTING_COINS, "likes": [], "following": [],
             "liked_by": [], "blocked_users": [], "last_daily_gift": None, "bio": "", "referrals": 0
         }
+        if 'referred_by' in context.user_data:
+            user_data[user_id]['referred_by'] = context.user_data['referred_by']
+
         save_data(user_data, USERS_DB_FILE)
         await update.message.reply_text(
             "سلام! به نظر میاد اولین باره که وارد میشی! لطفاً با دستور /profile پروفایلت رو کامل کن تا بتونی از همه امکانات استفاده کنی."
@@ -139,10 +143,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     welcome_text = (
-        f"سلام {user_first_name}! به «ایران‌گرام» خوش اومدی 👋\n\n"
+        f"سلام {user.first_name}! به «ایران‌گرام» خوش اومدی 👋\n\n"
         "فعالیت این ربات هزینه‌بر است، از حمایت شما سپاسگزاریم.\n\n"
         "از منوی زیر برای شروع استفاده کن."
-    ).format(user_first_name=user.first_name)
+    )
     await update.message.reply_text(welcome_text, reply_markup=get_main_menu(user_id))
 
 async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -175,7 +179,6 @@ async def received_age(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             "age": age
         })
 
-        # Referral bonus logic
         if 'referred_by' in user_data[user_id]:
             referrer_id = user_data[user_id]['referred_by']
             if referrer_id in user_data:
@@ -185,7 +188,8 @@ async def received_age(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             del user_data[user_id]['referred_by']
 
         save_data(user_data, USERS_DB_FILE)
-        await update.message.reply_text("✅ پروفایل شما با موفقیت تکمیل شد!", reply_markup=get_main_menu(user_id))
+        await update.message.reply_text("✅ پروفایل شما با موفقیت تکمیل شد!", reply_markup=ReplyKeyboardRemove())
+        await update.message.reply_text("از منوی اصلی استفاده کن:", reply_markup=get_main_menu(user_id))
         return ConversationHandler.END
     except (ValueError, KeyError):
         await update.message.reply_text("لطفاً سن را به صورت عدد صحیح وارد کن.")
@@ -234,7 +238,6 @@ async def next_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id == ADMIN_ID:
-        # This is a placeholder for the full admin panel logic
         await update.message.reply_text("به پنل مدیریت خوش آمدید.")
     else:
         await update.message.reply_text("شما اجازه دسترسی به این بخش را ندارید.")
@@ -242,9 +245,7 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
-    # This is a placeholder for the full callback query router
     await query.edit_message_text(text=f"شما دکمه {query.data} را فشار دادید.")
-
 
 # --- MAIN APPLICATION SETUP ---
 def main() -> None:
