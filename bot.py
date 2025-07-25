@@ -104,7 +104,7 @@ def get_profile_edit_menu():
         [InlineKeyboardButton("✏️ نام", callback_data="edit_name"), InlineKeyboardButton("✏️ جنسیت", callback_data="edit_gender")],
         [InlineKeyboardButton("✏️ سن", callback_data="edit_age"), InlineKeyboardButton("📝 بیوگرافی", callback_data="edit_bio")],
         [InlineKeyboardButton("🖼️ عکس پروفایل", callback_data="edit_photo")],
-        [InlineKeyboardButton("🔙 بازگشت به پروفایل", callback_data="my_profile")]
+        [InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="main_menu")]
     ]
     return InlineKeyboardMarkup(keyboard)
 
