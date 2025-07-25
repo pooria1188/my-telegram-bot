@@ -19,7 +19,7 @@ from telegram.constants import ParseMode
 from telegram.error import TelegramError
 
 # --- CONFIGURATION (تنظیمات اصلی) ---
-# توکن ربات خود را در اینجا قرار دهید
+# توکن ربات خود را در متغیرهای محیطی (Environment Variables) پلتفرم هاستینگ خود قرار دهید
 TOKEN = os.environ.get("TELEGRAM_TOKEN", "7689216297:AAHVucWhXpGlp15Ulk2zsppst1gDH9PCZnQ") 
 # آیدی عددی ادمین ربات
 ADMIN_ID = int(os.environ.get("ADMIN_ID", 6929024145))
@@ -27,6 +27,7 @@ ADMIN_ID = int(os.environ.get("ADMIN_ID", 6929024145))
 BOT_USERNAME = os.environ.get("BOT_USERNAME", "irangram_chatbot")
 
 # --- DATABASE & CONSTANTS (پایگاه داده و مقادیر ثابت) ---
+# فایل‌های JSON برای ذخیره‌سازی دائمی اطلاعات استفاده می‌شوند
 USERS_DB_FILE = "users.json"
 REPORTS_DB_FILE = "reports.json"
 CONFIG_FILE = "config.json"
@@ -55,12 +56,14 @@ logger = logging.getLogger(__name__)
 # --- STATE DEFINITIONS (تعریف وضعیت‌های مکالمه) ---
 # وضعیت‌ها برای ساخت پروفایل اولیه
 PROFILE_NAME, PROFILE_GENDER, PROFILE_AGE = range(3)
-# وضعیت‌ها برای ویرایش پروفایل
-EDIT_CONVO, EDIT_NAME, EDIT_GENDER, EDIT_AGE, EDIT_BIO, EDIT_PHOTO, REPORT_REASON = range(3, 10)
+# وضعیت‌ها برای ویرایش پروفایل و گزارش
+EDIT_NAME, EDIT_GENDER, EDIT_AGE, EDIT_BIO, EDIT_PHOTO, REPORT_REASON = range(3, 9)
 
 
 # --- DATABASE & CONFIG MANAGEMENT (مدیریت فایل‌های JSON) ---
+# این توابع مسئول خواندن و نوشتن اطلاعات روی فایل‌ها هستند و ذخیره‌سازی دائمی را تضمین می‌کنند
 def load_data(filename, default_type=dict):
+    """اطلاعات را از یک فایل JSON بارگذاری می‌کند."""
     try:
         with open(filename, "r", encoding='utf-8') as f:
             return json.load(f)
@@ -69,6 +72,7 @@ def load_data(filename, default_type=dict):
         return default_type()
 
 def save_data(data, filename):
+    """اطلاعات را در یک فایل JSON ذخیره می‌کند. این کار باعث ماندگاری داده‌ها می‌شود."""
     with open(filename, "w", encoding='utf-8') as f:
         json.dump(data, f, indent=4, ensure_ascii=False)
 
@@ -78,7 +82,7 @@ reports_data = load_data(REPORTS_DB_FILE, default_type=list)
 config_data = load_data(CONFIG_FILE)
 
 # --- GLOBAL VARIABLES (متغیرهای سراسری) ---
-# این دیکشنری‌ها وضعیت‌های لحظه‌ای ربات را نگه می‌دارند
+# این دیکشنری‌ها وضعیت‌های لحظه‌ای ربات را در حافظه نگه می‌دارند تا سرعت عمل بالا باشد
 user_partners = {}  # {user_id: partner_id}
 # صف انتظار برای چت
 waiting_pool = {"random": [], "male": [], "female": []}
@@ -136,8 +140,7 @@ def get_cancel_search_keyboard():
 
 # --- UTILITY & FILTERING (توابع کاربردی) ---
 def is_message_forbidden(text: str) -> bool:
-    """بررسی می‌کند که آیا پیام حاوی شماره تلفن یا آیدی تلگرام است یا خیر"""
-    # این عبارات باقاعده شماره تلفن‌ها و آیدی‌های تلگرامی را پیدا می‌کنند
+    """بررسی می‌کند که آیا پیام حاوی شماره تلفن، آیدی تلگرام یا لینک است یا خیر"""
     phone_regex = r'\+?\d[\d\s-]{8,12}\d'
     id_regex = r'@[a-zA-Z0-9_]{5,}'
     link_regex = r't\.me/|https?://'
@@ -149,7 +152,6 @@ def get_user_profile_text(user_id, target_user_id):
     if not profile:
         return "پروفایل این کاربر یافت نشد."
     
-    # بررسی اینکه آیا کاربر فعلی توسط کاربر هدف لایک شده است
     is_liked_by = str(user_id) in profile.get('following', [])
 
     text = (
@@ -157,7 +159,7 @@ def get_user_profile_text(user_id, target_user_id):
         f"🔹 نام: {profile.get('name', 'ثبت نشده')}\n"
         f"🔹 جنسیت: {'پسر' if profile.get('gender') == 'male' else 'دختر' if profile.get('gender') == 'female' else 'ثبت نشده'}\n"
         f"🔹 سن: {profile.get('age', 'ثبت نشده')}\n"
-        f"📝 بیو: {profile.get('bio', 'ثبت نشده') or 'بیوگرافی ثبت نشده است.'}\n"
+        f"📝 بیو: {profile.get('bio', 'بیوگرافی ثبت نشده است.')}\n"
         f"👍 تعداد لایک‌ها: {len(profile.get('liked_by', []))}\n"
     )
     if is_liked_by:
@@ -173,35 +175,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     user_id = str(user.id)
     
-    # بررسی لینک دعوت
     if context.args and user_id not in user_data:
         try:
             payload = context.args[0]
-            if payload.startswith('ref_'):
-                referrer_id = payload.split('_')[1]
-                # کاربر نمی‌تواند خودش را دعوت کند
-                if str(referrer_id) != user_id:
-                    # این مقدار به صورت موقت ذخیره می‌شود تا پس از تکمیل پروفایل استفاده شود
-                    context.user_data['referred_by'] = referrer_id
+            if payload.startswith('ref_') and str(payload.split('_')[1]) != user_id:
+                context.user_data['referred_by'] = payload.split('_')[1]
         except Exception as e:
             logger.error(f"Error processing referral link for user {user_id}: {e}")
 
-    # اگر کاربر جدید است
     if user_id not in user_data:
         user_data[user_id] = {
-            "name": user.first_name,
-            "banned": False,
-            "coins": STARTING_COINS,
-            "likes": 0, # دیگر استفاده نمی‌شود، می‌توان حذف کرد
-            "following": [], # کسانی که این کاربر لایک کرده
-            "liked_by": [], # کسانی که این کاربر را لایک کرده‌اند
-            "blocked_users": [],
-            "last_daily_gift": None,
-            "bio": "",
-            "age": None,
-            "gender": None,
-            "photo": None,
-            "referrals": 0
+            "name": user.first_name, "banned": False, "coins": STARTING_COINS,
+            "following": [], "liked_by": [], "blocked_users": [],
+            "last_daily_gift": None, "bio": "", "age": None, "gender": None,
+            "photo": None, "referrals": 0
         }
         if 'referred_by' in context.user_data:
             user_data[user_id]['referred_by'] = context.user_data['referred_by']
@@ -210,23 +197,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         
         await update.message.reply_text(
             "🎉 سلام! به «ایران‌گرام» خوش اومدی!\n\n"
-            "اینجا می‌تونی به صورت ناشناس با بقیه صحبت کنی.\n\n"
-            "برای شروع، لطفاً پروفایلت رو کامل کن. روی /profile کلیک کن یا این دستور رو تایپ کن."
+            "برای شروع، لطفاً پروفایلت رو با دستور /profile کامل کن."
         )
-        # به طور خودکار کاربر را به مرحله اول ساخت پروفایل هدایت می‌کنیم
-        await profile_command(update, context)
-        return
+        return await profile_command(update, context)
 
-    # اگر کاربر مسدود شده است
     if user_data[user_id].get('banned', False):
-        await update.message.reply_text("🚫 شما توسط مدیریت از ربات مسدود شده‌اید و نمی‌توانید از امکانات آن استفاده کنید.")
+        await update.message.reply_text("🚫 شما توسط مدیریت از ربات مسدود شده‌اید.")
         return
 
-    # خوش‌آمدگویی به کاربر قدیمی
-    welcome_text = (
-        f"سلام {user.first_name}! دوباره به «ایران‌گرام» خوش اومدی 👋\n\n"
-        "از منوی زیر برای شروع استفاده کن."
-    )
+    welcome_text = f"سلام {user.first_name}! دوباره به «ایران‌گرام» خوش اومدی 👋\n\nاز منوی زیر استفاده کن."
     await update.message.reply_text(welcome_text, reply_markup=get_main_menu(user_id))
 
 async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -235,13 +214,11 @@ async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     return PROFILE_NAME
 
 async def received_profile_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """نام کاربر را دریافت و درخواست جنسیت می‌کند"""
     context.user_data['profile_name'] = update.message.text
     await update.message.reply_text("جنسیت خود را انتخاب کنید:", reply_markup=get_gender_keyboard("profile_gender"))
     return PROFILE_GENDER
 
 async def received_profile_gender(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """جنسیت کاربر را دریافت و درخواست سن می‌کند"""
     query = update.callback_query
     await query.answer()
     context.user_data['profile_gender'] = query.data.split('_')[-1]
@@ -249,7 +226,6 @@ async def received_profile_gender(update: Update, context: ContextTypes.DEFAULT_
     return PROFILE_AGE
 
 async def received_profile_age(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """سن کاربر را دریافت، پروفایل را ذخیره و مکالمه را تمام می‌کند"""
     user_id = str(update.effective_user.id)
     try:
         age = int(update.message.text)
@@ -257,28 +233,24 @@ async def received_profile_age(update: Update, context: ContextTypes.DEFAULT_TYP
             await update.message.reply_text("سن وارد شده معتبر نیست. لطفاً یک عدد بین 13 تا 80 وارد کنید.")
             return PROFILE_AGE
         
-        # ذخیره اطلاعات پروفایل
         user_data[user_id].update({
             "name": context.user_data['profile_name'],
             "gender": context.user_data['profile_gender'],
             "age": age
         })
 
-        # اعمال پاداش دعوت اگر وجود داشته باشد
         if 'referred_by' in user_data[user_id]:
-            referrer_id = user_data[user_id]['referred_by']
+            referrer_id = user_data[user_id].pop('referred_by')
             if referrer_id in user_data:
-                user_data[referrer_id]['coins'] = user_data[referrer_id].get('coins', 0) + REFERRAL_BONUS_COINS
-                user_data[referrer_id]['referrals'] = user_data[referrer_id].get('referrals', 0) + 1
+                user_data[referrer_id]['coins'] += REFERRAL_BONUS_COINS
+                user_data[referrer_id]['referrals'] += 1
                 try:
                     await context.bot.send_message(
                         referrer_id,
-                        f"🎉 تبریک! یک نفر با لینک شما عضو شد و پروفایلش را تکمیل کرد. {REFERRAL_BONUS_COINS} سکه هدیه گرفتی!"
+                        f"🎉 تبریک! یک نفر با لینک شما عضو شد. {REFERRAL_BONUS_COINS} سکه هدیه گرفتی!"
                     )
                 except TelegramError as e:
                     logger.warning(f"Could not send referral bonus message to {referrer_id}: {e}")
-            # حذف کلید موقت
-            del user_data[user_id]['referred_by']
 
         save_data(user_data, USERS_DB_FILE)
         await update.message.reply_text(
@@ -293,19 +265,17 @@ async def received_profile_age(update: Update, context: ContextTypes.DEFAULT_TYP
 
 # CHATTING LOGIC
 async def search_partner(update: Update, context: ContextTypes.DEFAULT_TYPE, search_type: str):
-    """کاربر را در صف انتظار قرار می‌دهد یا به یک هم‌صحبت وصل می‌کند"""
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
 
-    # بررسی کامل بودن پروفایل
     profile = user_data.get(str(user_id), {})
     if not all(profile.get(key) for key in ['name', 'gender', 'age']):
         await query.message.reply_text("❌ برای شروع چت، اول باید پروفایل خود را با دستور /profile کامل کنی!")
         return
 
     if user_id in user_partners:
-        await query.message.reply_text("شما در حال حاضر در یک چت هستید! ابتدا چت فعلی را تمام کنید.")
+        await query.message.reply_text("شما در حال حاضر در یک چت هستید!")
         return
         
     for queue in waiting_pool.values():
@@ -313,7 +283,6 @@ async def search_partner(update: Update, context: ContextTypes.DEFAULT_TYPE, sea
             await query.message.reply_text("شما از قبل در صف انتظار هستید!", reply_markup=get_cancel_search_keyboard())
             return
 
-    # کسر هزینه برای جستجوی جنسیت خاص
     if search_type in ["male", "female"]:
         if user_data[str(user_id)]['coins'] < GENDER_SEARCH_COST:
             await query.message.reply_text(f"🪙 سکه کافی نداری! برای این جستجو به {GENDER_SEARCH_COST} سکه نیاز داری.")
@@ -322,62 +291,45 @@ async def search_partner(update: Update, context: ContextTypes.DEFAULT_TYPE, sea
         save_data(user_data, USERS_DB_FILE)
         await query.message.reply_text(f"💰 {GENDER_SEARCH_COST} سکه از حساب شما کسر شد.", reply_markup=get_main_menu(user_id))
 
-
-    # پیدا کردن هم‌صحبت
-    partner_id = None
-    # تعیین صف جستجوی طرف مقابل
     my_gender = user_data[str(user_id)]['gender']
-    
-    # اگر کاربر به دنبال جنسیت خاصی است
-    if search_type in ["male", "female"]:
-        target_queue = waiting_pool[search_type]
-        if target_queue:
-            partner_id = target_queue.pop(0)
-    # اگر جستجوی شانسی است
-    else: # search_type == "random"
-        # اول در صف جنس مخالف جستجو کن
-        opposite_gender = "female" if my_gender == "male" else "male"
-        if waiting_pool[opposite_gender]:
-            partner_id = waiting_pool[opposite_gender].pop(0)
-        # اگر کسی نبود، در صف جستجوی شانسی بگرد
-        elif waiting_pool["random"]:
-            partner_id = waiting_pool["random"].pop(0)
-        # اگر باز هم کسی نبود، در صف همجنس‌ها بگرد
-        elif waiting_pool[my_gender]:
-             partner_id = waiting_pool[my_gender].pop(0)
+    partner_id = find_partner_in_pool(user_id, my_gender, search_type)
 
     if partner_id:
         user_partners[user_id] = partner_id
         user_partners[partner_id] = user_id
         
-        # اطلاع‌رسانی به هر دو کاربر
         for uid, pid in [(user_id, partner_id), (partner_id, user_id)]:
             try:
                 await context.bot.send_message(
-                    uid, 
-                    "✅ یک هم‌صحبت برای شما پیدا شد! می‌تونید صحبت رو شروع کنید.", 
-                    reply_markup=get_in_chat_keyboard(pid)
+                    uid, "✅ یک هم‌صحبت برای شما پیدا شد!", reply_markup=get_in_chat_keyboard(pid)
                 )
             except TelegramError as e:
                 logger.error(f"Failed to send message to {uid}: {e}")
-                # اگر ارسال پیام به یکی از طرفین ممکن نباشد، چت را لغو کن
                 await end_chat_for_both(uid, pid, context, "⚠️ به دلیل مشکل فنی، چت لغو شد.")
                 return
     else:
-        # اضافه کردن کاربر به صف انتظار مناسب
-        if search_type == "random":
-            # کاربرانی که جستجوی شانسی می‌زنند در صف جنسیت خودشان می‌روند تا منطق پیدا کردن ساده‌تر شود
-             waiting_pool[my_gender].append(user_id)
-        else:
-            waiting_pool[search_type].append(user_id)
-        await query.message.reply_text("⏳ شما در صف انتظار قرار گرفتید... لطفاً صبور باشید.", reply_markup=get_cancel_search_keyboard())
+        waiting_pool[search_type if search_type != 'random' else my_gender].append(user_id)
+        await query.message.reply_text("⏳ شما در صف انتظار قرار گرفتید...", reply_markup=get_cancel_search_keyboard())
+
+def find_partner_in_pool(user_id, my_gender, search_type):
+    """منطق پیدا کردن هم‌صحبت از صف‌های انتظار"""
+    if search_type in ["male", "female"]:
+        if waiting_pool[search_type]:
+            return waiting_pool[search_type].pop(0)
+    else: # random search
+        opposite_gender = "female" if my_gender == "male" else "male"
+        if waiting_pool[opposite_gender]:
+            return waiting_pool[opposite_gender].pop(0)
+        if waiting_pool["random"]:
+            return waiting_pool["random"].pop(0)
+        if waiting_pool[my_gender]:
+             return waiting_pool[my_gender].pop(0)
+    return None
 
 async def end_chat_for_both(user_id, partner_id, context, message_for_partner):
     """چت را برای هر دو کاربر پایان می‌دهد"""
-    if user_id in user_partners:
-        del user_partners[user_id]
-    if partner_id in user_partners:
-        del user_partners[partner_id]
+    user_partners.pop(user_id, None)
+    user_partners.pop(partner_id, None)
     
     try:
         await context.bot.send_message(partner_id, message_for_partner, reply_markup=get_main_menu(partner_id))
@@ -385,134 +337,101 @@ async def end_chat_for_both(user_id, partner_id, context, message_for_partner):
         logger.warning(f"Could not notify partner {partner_id} about chat end: {e}")
 
 async def next_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """چت فعلی را قطع و کاربر را به منوی اصلی برمی‌گرداند"""
     query = update.callback_query
     user_id = query.from_user.id
     
     if user_id in user_partners:
         partner_id = user_partners[user_id]
-        
         await end_chat_for_both(user_id, partner_id, context, "❌ طرف مقابل چت را ترک کرد.")
-        
-        await query.message.edit_text("شما چت را ترک کردید. برای شروع چت جدید از منو استفاده کنید.", reply_markup=get_main_menu(user_id))
+        await query.message.edit_text("شما چت را ترک کردید.", reply_markup=get_main_menu(user_id))
     else:
         await query.answer("شما در حال حاضر در چت نیستید.", show_alert=True)
 
 async def cancel_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """کاربر را از صف انتظار خارج می‌کند"""
     query = update.callback_query
     user_id = query.from_user.id
     
-    removed = False
     for queue in waiting_pool.values():
         if user_id in queue:
             queue.remove(user_id)
-            removed = True
-            break
+            await query.message.edit_text("جستجوی شما لغو شد.", reply_markup=get_main_menu(user_id))
+            return
             
-    if removed:
-        await query.message.edit_text("جستجوی شما لغو شد.", reply_markup=get_main_menu(user_id))
-    else:
-        await query.answer("شما در صف انتظار نیستید.", show_alert=True)
+    await query.answer("شما در صف انتظار نیستید.", show_alert=True)
 
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """پیام‌های متنی را مدیریت می‌کند (ارسال به هم‌صحبت یا پاسخ مناسب)"""
     user_id = update.effective_user.id
     text = update.message.text
 
-    # فیلتر کردن محتوای ممنوعه
     if is_message_forbidden(text):
         try:
             await update.message.delete()
-            await update.message.reply_text("🚫 ارسال شماره تلفن، آیدی یا لینک در ربات ممنوع است و پیام شما حذف شد.", quote=False)
+            await update.message.reply_text("🚫 ارسال شماره تلفن، آیدی یا لینک ممنوع است.", quote=False)
         except TelegramError as e:
             logger.warning(f"Could not delete forbidden message from {user_id}: {e}")
         return
     
-    # اگر کاربر در چت است، پیام را به طرف مقابل ارسال کن
     if user_id in user_partners:
         partner_id = user_partners[user_id]
         try:
             await context.bot.send_message(partner_id, text)
         except TelegramError as e:
             logger.warning(f"Failed to forward message from {user_id} to {partner_id}: {e}")
-            await update.message.reply_text("⚠️ به نظر می‌رسد هم‌صحبت شما ربات را مسدود کرده است. چت به صورت خودکار پایان یافت.")
+            await update.message.reply_text("⚠️ هم‌صحبت شما دیگر در دسترس نیست. چت پایان یافت.")
             await end_chat_for_both(user_id, partner_id, context, "⚠️ کاربر مقابل دیگر در دسترس نیست. چت پایان یافت.")
     else:
         await update.message.reply_text("شما به کسی وصل نیستی. از منوی زیر استفاده کن:", reply_markup=get_main_menu(user_id))
 
 async def handle_media_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """پیام‌های رسانه‌ای (عکس، ویدیو، استیکر و...) را مدیریت می‌کند"""
     user_id = update.effective_user.id
-    if user_id in user_partners:
-        partner_id = user_partners[user_id]
-        try:
-            if update.message.photo:
-                await context.bot.send_photo(partner_id, update.message.photo[-1].file_id, caption=update.message.caption)
-            elif update.message.voice:
-                await context.bot.send_voice(partner_id, update.message.voice.file_id)
-            elif update.message.video:
-                await context.bot.send_video(partner_id, update.message.video.file_id, caption=update.message.caption)
-            elif update.message.sticker:
-                await context.bot.send_sticker(partner_id, update.message.sticker.file_id)
-            elif update.message.animation:
-                await context.bot.send_animation(partner_id, update.message.animation.file_id)
-        except TelegramError as e:
-            logger.warning(f"Failed to forward media from {user_id} to {partner_id}: {e}")
-            await update.message.reply_text("⚠️ ارسال پیام به هم‌صحبت شما با مشکل مواجه شد. ممکن است او ربات را بلاک کرده باشد.")
-            await end_chat_for_both(user_id, partner_id, context, "⚠️ کاربر مقابل دیگر در دسترس نیست. چت پایان یافت.")
-    else:
-        await update.message.reply_text("شما به کسی وصل نیستی. برای ارسال رسانه ابتدا یک چت را شروع کنید.", reply_markup=get_main_menu(user_id))
+    if user_id not in user_partners:
+        await update.message.reply_text("شما به کسی وصل نیستی.", reply_markup=get_main_menu(user_id))
+        return
+
+    partner_id = user_partners[user_id]
+    message = update.message
+    try:
+        if message.photo:
+            await context.bot.send_photo(partner_id, message.photo[-1].file_id, caption=message.caption)
+        elif message.voice:
+            await context.bot.send_voice(partner_id, message.voice.file_id)
+        elif message.video:
+            await context.bot.send_video(partner_id, message.video.file_id, caption=message.caption)
+        elif message.sticker:
+            await context.bot.send_sticker(partner_id, message.sticker.file_id)
+        elif message.animation:
+            await context.bot.send_animation(partner_id, message.animation.file_id)
+    except TelegramError as e:
+        logger.warning(f"Failed to forward media from {user_id} to {partner_id}: {e}")
+        await update.message.reply_text("⚠️ ارسال پیام به هم‌صحبت شما با مشکل مواجه شد.")
+        await end_chat_for_both(user_id, partner_id, context, "⚠️ کاربر مقابل دیگر در دسترس نیست. چت پایان یافت.")
 
 # --- CALLBACK QUERY HANDLERS (مدیریت دکمه‌های شیشه‌ای) ---
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """تمام callback query ها را به تابع مناسب هدایت می‌کند"""
     query = update.callback_query
     data = query.data
-    user_id = str(query.from_user.id)
-
-    # جدا کردن دستور و پارامتر
     command, _, param = data.partition('_')
     
-    # نقشه برای مرتبط کردن دستورات با توابع
     COMMAND_MAP = {
-        "search": search_partner,
-        "my": handle_my_commands,
-        "daily": daily_gift,
-        "invite": invite_friends,
-        "hall": hall_of_fame,
-        "help": help_command,
-        "main": main_menu_from_callback,
-        "like": like_partner,
-        "view": view_partner_profile,
-        "report": report_partner,
-        "next": next_chat,
-        "cancel": cancel_search,
-        "edit": start_edit_profile,
-        "admin": admin_panel,
-        "broadcast": broadcast_message,
-        "stats": show_stats,
+        "search": lambda u, c: search_partner(u, c, param),
+        "my": handle_my_commands, "daily": daily_gift, "invite": invite_friends,
+        "hall": hall_of_fame, "help": help_command, "main": main_menu_from_callback,
+        "like": like_partner, "view": view_partner_profile, "report": report_partner,
+        "next": next_chat, "cancel": cancel_search, "edit": start_edit_profile,
+        "admin": admin_panel, "broadcast": broadcast_message, "stats": show_stats,
     }
     
-    handler = COMMAND_MAP.get(command)
-    
-    if handler:
-        # برای search_partner، پارامتر نوع جستجو است
-        if command == "search":
-            await handler(update, context, param)
-        else:
-            await handler(update, context)
+    if command in COMMAND_MAP:
+        await COMMAND_MAP[command](update, context)
     else:
         await query.answer("دستور ناشناخته.", show_alert=True)
 
 async def main_menu_from_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """نمایش منوی اصلی از طریق یک دکمه بازگشت"""
     query = update.callback_query
     await query.answer()
     await query.message.edit_text("منوی اصلی:", reply_markup=get_main_menu(query.from_user.id))
 
 async def handle_my_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """دستورات مربوط به 'my' مانند my_profile و my_coins را مدیریت می‌کند"""
     query = update.callback_query
     command = query.data
     user_id = str(query.from_user.id)
@@ -520,129 +439,105 @@ async def handle_my_commands(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if command == "my_profile":
         profile = user_data.get(user_id, {})
         text = get_user_profile_text(user_id, user_id)
-        # نمایش عکس پروفایل اگر وجود داشته باشد
         photo_id = profile.get('photo')
+        
+        # برای جلوگیری از خطای "message is not modified" پیام را حذف و دوباره ارسال می‌کنیم
+        await query.message.delete()
         if photo_id:
              await query.message.reply_photo(photo_id, caption=text, reply_markup=get_profile_edit_menu())
-             await query.message.delete() # حذف پیام متنی قبلی
         else:
-            await query.message.edit_text(text, reply_markup=get_profile_edit_menu())
+            await query.message.reply_text(text, reply_markup=get_profile_edit_menu())
 
     elif command == "my_coins":
         coins = user_data.get(user_id, {}).get('coins', 0)
         await query.answer(f"🪙 شما در حال حاضر {coins} سکه دارید.", show_alert=True)
 
 async def daily_gift(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """پردازش هدیه روزانه"""
     query = update.callback_query
     user_id = str(query.from_user.id)
-    
     last_gift_str = user_data[user_id].get('last_daily_gift')
     now = datetime.now()
     
     if last_gift_str:
-        last_gift_time = datetime.fromisoformat(last_gift_str)
-        if now - last_gift_time < timedelta(hours=24):
-            remaining = timedelta(hours=24) - (now - last_gift_time)
-            hours, remainder = divmod(remaining.seconds, 3600)
-            minutes, _ = divmod(remainder, 60)
-            await query.answer(f"شما قبلاً هدیه امروز را گرفته‌اید! {hours} ساعت و {minutes} دقیقه دیگر دوباره تلاش کنید.", show_alert=True)
+        time_since_gift = now - datetime.fromisoformat(last_gift_str)
+        if time_since_gift < timedelta(hours=24):
+            remaining = timedelta(hours=24) - time_since_gift
+            hours, rem = divmod(remaining.seconds, 3600)
+            minutes, _ = divmod(rem, 60)
+            await query.answer(f"شما قبلاً هدیه گرفته‌اید! {hours} ساعت و {minutes} دقیقه دیگر تلاش کنید.", show_alert=True)
             return
             
-    user_data[user_id]['coins'] = user_data[user_id].get('coins', 0) + DAILY_GIFT_COINS
+    user_data[user_id]['coins'] += DAILY_GIFT_COINS
     user_data[user_id]['last_daily_gift'] = now.isoformat()
     save_data(user_data, USERS_DB_FILE)
     
-    await query.answer(f"🎁 تبریک! {DAILY_GIFT_COINS} سکه به حساب شما اضافه شد.", show_alert=True)
-    # آپدیت کردن منو برای نمایش سکه جدید
-    await query.message.edit_reply_markup(reply_markup=get_main_menu(user_id))
+    await query.answer(f"🎁 تبریک! {DAILY_GIFT_COINS} سکه به شما اضافه شد.", show_alert=True)
+    await query.edit_message_reply_markup(reply_markup=get_main_menu(user_id))
 
 async def invite_friends(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ارسال لینک دعوت برای کاربر"""
     query = update.callback_query
+    await query.answer()
     user_id = query.from_user.id
     invite_link = f"https://t.me/{BOT_USERNAME}?start=ref_{user_id}"
-    
-    invite_text = config_data.get("invite_text", 
-        f"🔥 با این لینک دوستات رو به بهترین ربات چت ناشناس دعوت کن و با هر عضویت جدید که پروفایلش رو کامل کنه، {REFERRAL_BONUS_COINS} سکه هدیه بگیر! 🔥"
-    )
-    
-    final_text = f"{invite_text}\n\nلینک دعوت شما:\n`{invite_link}`" # Use markdown for easy copy
+    invite_text = config_data.get("invite_text", f"🔥 با این لینک دوستات رو به ربات دعوت کن و با هر عضویت جدید، {REFERRAL_BONUS_COINS} سکه هدیه بگیر! 🔥")
+    final_text = f"{invite_text}\n\nلینک دعوت شما:\n`{invite_link}`"
     await query.message.reply_text(final_text, parse_mode=ParseMode.MARKDOWN)
-    await query.answer()
 
 async def hall_of_fame(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """نمایش تالار مشاهیر (کاربران با بیشترین لایک)"""
     query = update.callback_query
-    # فیلتر کردن کاربرانی که پروفایل کامل دارند
     valid_users = {uid: data for uid, data in user_data.items() if 'liked_by' in data and 'name' in data}
     sorted_users = sorted(valid_users.items(), key=lambda item: len(item[1].get('liked_by', [])), reverse=True)
     
     text = "🏆 **تالار مشاهیر - ۱۰ کاربر برتر** 🏆\n\n"
-    if not sorted_users:
-        text += "هنوز کسی در تالار مشاهیر ثبت نشده است."
-    else:
-        for i, (user_id, data) in enumerate(sorted_users[:10]):
-            likes = len(data.get('liked_by', []))
-            name = data.get('name', 'ناشناس')
-            text += f"{i+1}. **{name}** - {likes} لایک 👍\n"
-            
+    text += "\n".join([f"{i+1}. **{data.get('name', 'ناشناس')}** - {len(data.get('liked_by', []))} لایک 👍" for i, (uid, data) in enumerate(sorted_users[:10])]) or "هنوز کسی در تالار مشاهیر نیست."
     await query.message.edit_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت", callback_data="main_menu")]]))
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """نمایش پیام راهنما"""
     query = update.callback_query
     help_text = (
-        "**❓ راهنمای ربات ایران‌گرام**\n\n"
-        "🔹 **جستجوی شانسی:** شما را به یک کاربر آنلاین (پسر یا دختر) وصل می‌کند.\n"
-        "🔹 **جستجوی پسر/دختر:** با پرداخت سکه، فقط با جنسیت مورد نظر شما چت می‌کنید.\n"
-        "🔹 **هدیه روزانه:** هر ۲۴ ساعت یک بار می‌توانید مقداری سکه رایگان دریافت کنید.\n"
-        "🔹 **دعوت دوستان:** با دعوت از دوستانتان، پس از تکمیل پروفایل توسط آن‌ها، سکه هدیه بگیرید.\n"
+        "**❓ راهنمای ربات**\n\n"
+        "🔹 **جستجوی شانسی:** شما را به یک کاربر آنلاین وصل می‌کند.\n"
+        "🔹 **جستجوی جنسیت:** با پرداخت سکه، با جنسیت مورد نظر چت می‌کنید.\n"
+        "🔹 **هدیه روزانه:** هر ۲۴ ساعت، سکه رایگان دریافت کنید.\n"
+        "🔹 **دعوت دوستان:** با دعوت دوستانتان سکه هدیه بگیرید.\n"
         "🔹 **پروفایل من:** اطلاعات خود را مشاهده و ویرایش کنید.\n"
-        "🔹 **تالار مشاهیر:** لیست محبوب‌ترین کاربران ربات را ببینید.\n\n"
-        "⚠️ **قوانین:** ارسال هرگونه اطلاعات تماس (شماره، آیدی، لینک) ممنوع است و منجر به حذف پیام و در صورت تکرار، مسدود شدن شما می‌شود."
+        "⚠️ **قوانین:** ارسال اطلاعات تماس (شماره، آیدی، لینک) ممنوع است."
     )
     await query.message.edit_text(help_text, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت", callback_data="main_menu")]]))
 
 # --- IN-CHAT CALLBACK HANDLERS ---
 async def like_partner(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """پردازش لایک کردن هم‌صحبت"""
     query = update.callback_query
     user_id = str(query.from_user.id)
     _, partner_id_str = query.data.split('_')
     
-    # اطمینان از اینکه کاربر هنوز در چت با همان فرد است
-    if user_id not in user_partners or str(user_partners[user_id]) != partner_id_str:
+    if str(user_partners.get(user_id)) != partner_id_str:
         await query.answer("شما دیگر با این کاربر در چت نیستید.", show_alert=True)
         return
 
-    partner_id = str(partner_id_str)
-    
-    if partner_id not in user_data[user_id]['following']:
-        user_data[user_id]['following'].append(partner_id)
-        user_data[partner_id]['liked_by'].append(user_id)
+    if partner_id_str not in user_data[user_id]['following']:
+        user_data[user_id]['following'].append(partner_id_str)
+        user_data[partner_id_str]['liked_by'].append(user_id)
         save_data(user_data, USERS_DB_FILE)
         await query.answer("شما این کاربر را لایک کردید! 👍", show_alert=True)
         try:
-            await context.bot.send_message(partner_id, "🎉 خبر خوب! هم‌صحبت شما، شما را لایک کرد!")
+            await context.bot.send_message(partner_id_str, "🎉 خبر خوب! هم‌صحبت شما، شما را لایک کرد!")
         except TelegramError as e:
-            logger.warning(f"Could not notify {partner_id} about like: {e}")
+            logger.warning(f"Could not notify {partner_id_str} about like: {e}")
     else:
         await query.answer("شما قبلاً این کاربر را لایک کرده‌اید.", show_alert=True)
 
 async def view_partner_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """نمایش پروفایل هم‌صحبت"""
     query = update.callback_query
     user_id = str(query.from_user.id)
     _, partner_id_str = query.data.split('_')
 
-    if user_id not in user_partners or str(user_partners[user_id]) != partner_id_str:
+    if str(user_partners.get(user_id)) != partner_id_str:
         await query.answer("شما دیگر با این کاربر در چت نیستید.", show_alert=True)
         return
         
     text = get_user_profile_text(user_id, partner_id_str)
-    profile = user_data.get(partner_id_str, {})
-    photo_id = profile.get('photo')
+    photo_id = user_data.get(partner_id_str, {}).get('photo')
 
     await query.answer()
     if photo_id:
@@ -651,12 +546,11 @@ async def view_partner_profile(update: Update, context: ContextTypes.DEFAULT_TYP
         await query.message.reply_text(text)
 
 async def report_partner(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """شروع روند گزارش کاربر"""
     query = update.callback_query
     user_id = str(query.from_user.id)
     _, partner_id_str = query.data.split('_')
 
-    if user_id not in user_partners or str(user_partners[user_id]) != partner_id_str:
+    if str(user_partners.get(user_id)) != partner_id_str:
         await query.answer("شما دیگر با این کاربر در چت نیستید.", show_alert=True)
         return ConversationHandler.END
     
@@ -665,220 +559,146 @@ async def report_partner(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     return REPORT_REASON
 
 async def received_report_reason(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """دریافت دلیل گزارش و ارسال آن به ادمین"""
     reporter_id = str(update.effective_user.id)
-    reportee_id = context.user_data['reportee_id']
+    reportee_id = context.user_data.pop('reportee_id')
     reason = update.message.text
     
-    report = {
-        "reporter": reporter_id,
-        "reportee": reportee_id,
-        "reason": reason,
-        "timestamp": datetime.now().isoformat()
-    }
+    report = {"reporter": reporter_id, "reportee": reportee_id, "reason": reason, "timestamp": datetime.now().isoformat()}
     reports_data.append(report)
     save_data(reports_data, REPORTS_DB_FILE)
     
-    report_text = (
-        f"🚨 **گزارش جدید** 🚨\n\n"
-        f"🔹 **گزارش دهنده:** `{reporter_id}` (نام: {user_data.get(reporter_id, {}).get('name', 'N/A')})\n"
-        f"🔹 **گزارش شده:** `{reportee_id}` (نام: {user_data.get(reportee_id, {}).get('name', 'N/A')})\n"
-        f"🔹 **دلیل:** {reason}"
-    )
+    reporter_name = user_data.get(reporter_id, {}).get('name', 'N/A')
+    reportee_name = user_data.get(reportee_id, {}).get('name', 'N/A')
+    report_text = f"🚨 **گزارش جدید** 🚨\n\n**گزارش دهنده:** `{reporter_id}` ({reporter_name})\n**گزارش شده:** `{reportee_id}` ({reportee_name})\n**دلیل:** {reason}"
     await context.bot.send_message(ADMIN_ID, report_text, parse_mode=ParseMode.MARKDOWN)
     
-    await update.message.reply_text("گزارش شما ثبت شد و برای مدیریت ارسال گردید. از همکاری شما سپاسگزاریم.")
-    
-    context.user_data.clear()
+    await update.message.reply_text("گزارش شما ثبت و برای مدیریت ارسال شد. سپاسگزاریم.")
     return ConversationHandler.END
 
 # --- PROFILE EDITING CONVERSATION ---
 async def start_edit_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """شروع مکالمه برای ویرایش یکی از فیلدهای پروفایل"""
     query = update.callback_query
     await query.answer()
     action = query.data
-
+    
     ACTION_MAP = {
         "edit_name": ("لطفاً نام جدید خود را وارد کنید:", EDIT_NAME),
         "edit_gender": ("جنسیت جدید خود را انتخاب کنید:", EDIT_GENDER),
         "edit_age": ("لطفاً سن جدید خود را به عدد وارد کنید:", EDIT_AGE),
         "edit_bio": ("بیوگرافی جدید خود را وارد کنید (حداکثر ۲۰۰ کاراکتر):", EDIT_BIO),
-        "edit_photo": ("عکس پروفایل جدید خود را ارسال کنید:", EDIT_PHOTO),
+        "edit_photo": ("عکس پروفایل جدید خود را ارسال کنید یا /remove_photo را برای حذف عکس فعلی بزنید:", EDIT_PHOTO),
     }
 
-    if action not in ACTION_MAP:
-        return ConversationHandler.END
-
+    if action not in ACTION_MAP: return ConversationHandler.END
     prompt, state = ACTION_MAP[action]
     
-    if action == "edit_gender":
-        await query.message.edit_text(prompt, reply_markup=get_gender_keyboard("update_gender"))
-    else:
-        await query.message.edit_text(prompt)
-        
+    reply_markup = get_gender_keyboard("update_gender") if action == "edit_gender" else None
+    await query.message.edit_text(prompt, reply_markup=reply_markup)
     return state
 
-async def received_new_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def save_profile_change(update: Update, context: ContextTypes.DEFAULT_TYPE, field: str, value, message: str):
+    """یک تابع کمکی برای ذخیره تغییرات پروفایل و ارسال پیام تایید"""
     user_id = str(update.effective_user.id)
-    user_data[user_id]['name'] = update.message.text
+    user_data[user_id][field] = value
     save_data(user_data, USERS_DB_FILE)
-    await update.message.reply_text("✅ نام شما با موفقیت تغییر کرد.", reply_markup=get_main_menu(user_id))
+    await update.effective_message.reply_text(f"✅ {message} شما با موفقیت تغییر کرد.", reply_markup=get_main_menu(user_id))
     return ConversationHandler.END
+
+async def received_new_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    return await save_profile_change(update, context, 'name', update.message.text, "نام")
 
 async def received_new_gender(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    user_id = str(query.from_user.id)
-    user_data[user_id]['gender'] = query.data.split('_')[-1]
-    save_data(user_data, USERS_DB_FILE)
-    await query.message.edit_text("✅ جنسیت شما با موفقیت تغییر کرد.", reply_markup=get_main_menu(user_id))
-    return ConversationHandler.END
+    await query.message.delete()
+    return await save_profile_change(query, context, 'gender', query.data.split('_')[-1], "جنسیت")
 
 async def received_new_age(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    user_id = str(update.effective_user.id)
     try:
         age = int(update.message.text)
         if not 13 <= age <= 80:
-            await update.message.reply_text("سن وارد شده معتبر نیست. لطفاً یک عدد بین 13 تا 80 وارد کنید.")
+            await update.message.reply_text("سن معتبر نیست. عددی بین 13 تا 80 وارد کنید.")
             return EDIT_AGE
-        user_data[user_id]['age'] = age
-        save_data(user_data, USERS_DB_FILE)
-        await update.message.reply_text("✅ سن شما با موفقیت تغییر کرد.", reply_markup=get_main_menu(user_id))
-        return ConversationHandler.END
+        return await save_profile_change(update, context, 'age', age, "سن")
     except ValueError:
-        await update.message.reply_text("ورودی نامعتبر است. لطفاً سن را فقط به صورت عدد وارد کنید.")
+        await update.message.reply_text("لطفاً سن را فقط به صورت عدد وارد کنید.")
         return EDIT_AGE
 
 async def received_new_bio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    user_id = str(update.effective_user.id)
-    bio = update.message.text
-    if len(bio) > 200:
-        await update.message.reply_text("بیوگرافی شما طولانی است. لطفاً متنی کوتاه‌تر (حداکثر ۲۰۰ کاراکتر) وارد کنید.")
+    if len(update.message.text) > 200:
+        await update.message.reply_text("بیوگرافی طولانی است (حداکثر ۲۰۰ کاراکتر).")
         return EDIT_BIO
-    user_data[user_id]['bio'] = bio
-    save_data(user_data, USERS_DB_FILE)
-    await update.message.reply_text("✅ بیوگرافی شما با موفقیت تغییر کرد.", reply_markup=get_main_menu(user_id))
-    return ConversationHandler.END
+    return await save_profile_change(update, context, 'bio', update.message.text, "بیوگرافی")
 
 async def received_new_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    user_id = str(update.effective_user.id)
+    if update.message.text == '/remove_photo':
+        return await save_profile_change(update, context, 'photo', None, "عکس پروفایل")
     if update.message.photo:
-        user_data[user_id]['photo'] = update.message.photo[-1].file_id
-        save_data(user_data, USERS_DB_FILE)
-        await update.message.reply_text("✅ عکس پروفایل شما با موفقیت تغییر کرد.", reply_markup=get_main_menu(user_id))
-        return ConversationHandler.END
-    else:
-        await update.message.reply_text("لطفاً یک عکس ارسال کنید.")
-        return EDIT_PHOTO
+        return await save_profile_change(update, context, 'photo', update.message.photo[-1].file_id, "عکس پروفایل")
+    
+    await update.message.reply_text("لطفاً یک عکس ارسال کنید.")
+    return EDIT_PHOTO
 
 # --- ADMIN COMMANDS ---
 async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("شما اجازه دسترسی به این بخش را ندارید.")
-        return
-    keyboard = [
-        [InlineKeyboardButton("📊 آمار ربات", callback_data="admin_stats")],
-        [InlineKeyboardButton("📢 ارسال پیام همگانی", callback_data="admin_broadcast")],
-        # More admin features can be added here
-    ]
+    if update.effective_user.id != ADMIN_ID: return
+    keyboard = [[InlineKeyboardButton("📊 آمار ربات", callback_data="admin_stats")], [InlineKeyboardButton("📢 ارسال پیام همگانی", callback_data="admin_broadcast")]]
     await update.message.reply_text("به پنل مدیریت خوش آمدید.", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles admin panel button clicks."""
     query = update.callback_query
     await query.answer()
-    
     action = query.data.split('_')[1]
-    
-    if action == "stats":
-        await show_stats(update, context)
-    elif action == "broadcast":
-        await query.message.edit_text("لطفاً پیام خود را برای ارسال به همه کاربران وارد کنید:")
-        # Here you would typically enter a conversation handler state for broadcasting
-        # For simplicity, this part is left as an exercise.
-        pass
+    if action == "stats": await show_stats(update, context)
+    elif action == "broadcast": await query.message.edit_text("لطفاً پیام خود را برای ارسال به همه کاربران وارد کنید:")
 
 async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Displays bot statistics for the admin."""
-    query = update.callback_query
-    total_users = len(user_data)
-    male_users = sum(1 for u in user_data.values() if u.get('gender') == 'male')
-    female_users = sum(1 for u in user_data.values() if u.get('gender') == 'female')
-    banned_users = sum(1 for u in user_data.values() if u.get('banned'))
-    
-    stats_text = (
-        f"📊 **آمار ربات**\n\n"
-        f"- کل کاربران: {total_users}\n"
-        f"- کاربران پسر: {male_users}\n"
-        f"- کاربران دختر: {female_users}\n"
-        f"- کاربران مسدود شده: {banned_users}\n"
-        f"- گزارش‌های ثبت شده: {len(reports_data)}"
-    )
-    await query.message.edit_text(stats_text, parse_mode=ParseMode.MARKDOWN)
+    total = len(user_data)
+    males = sum(1 for u in user_data.values() if u.get('gender') == 'male')
+    females = sum(1 for u in user_data.values() if u.get('gender') == 'female')
+    banned = sum(1 for u in user_data.values() if u.get('banned'))
+    stats = f"📊 **آمار ربات**\n\n- کل کاربران: {total}\n- پسر: {males}\n- دختر: {females}\n- مسدود: {banned}\n- گزارش‌ها: {len(reports_data)}"
+    await update.callback_query.message.edit_text(stats, parse_mode=ParseMode.MARKDOWN)
 
 async def broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # This is a simplified broadcast function. A real one should handle rate limits and errors.
-    if update.effective_user.id != ADMIN_ID:
-        return
-    
-    message_to_send = update.message.text.replace("/broadcast ", "")
-    active_users = [uid for uid, data in user_data.items() if not data.get('banned')]
-    sent_count = 0
-    failed_count = 0
-    
-    await update.message.reply_text(f"در حال ارسال پیام به {len(active_users)} کاربر...")
-    
-    for user_id in active_users:
+    if update.effective_user.id != ADMIN_ID: return
+    message = update.message.text.replace("/broadcast ", "")
+    users = [uid for uid, data in user_data.items() if not data.get('banned')]
+    await update.message.reply_text(f"در حال ارسال پیام به {len(users)} کاربر...")
+    sent, failed = 0, 0
+    for uid in users:
         try:
-            await context.bot.send_message(user_id, message_to_send)
-            sent_count += 1
-        except TelegramError:
-            failed_count += 1
-            
-    await update.message.reply_text(f"✅ پیام با موفقیت به {sent_count} کاربر ارسال شد.\n❌ ارسال به {failed_count} کاربر ناموفق بود.")
+            await context.bot.send_message(uid, message)
+            sent += 1
+        except TelegramError: failed += 1
+    await update.message.reply_text(f"✅ ارسال به {sent} کاربر موفق بود.\n❌ ارسال به {failed} کاربر ناموفق بود.")
 
 # --- GENERAL HANDLERS ---
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """دستور /cancel برای لغو هرگونه مکالمه"""
-    user = update.effective_user
-    await update.message.reply_text('عملیات لغو شد و به منوی اصلی بازگشتی.', reply_markup=get_main_menu(user.id))
+    await update.message.reply_text('عملیات لغو شد.', reply_markup=get_main_menu(update.effective_user.id))
     context.user_data.clear()
     return ConversationHandler.END
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """لاگ کردن خطاها و ارسال پیام خطا به کاربر در صورت امکان"""
     logger.error("Exception while handling an update:", exc_info=context.error)
-
-    # خطای Conflict به دلیل اجرای همزمان چند نمونه از ربات است.
-    # بهترین راه حل، توقف تمام نمونه‌های دیگر و اجرای مجدد است.
     if isinstance(context.error, TelegramError) and "Conflict" in str(context.error):
-        logger.critical(
-            "Conflict error detected. Make sure only one instance of the bot is running."
-        )
-        # در این حالت، بهتر است پروسه را متوقف کنیم تا پلتفرم آن را ری‌استارت کند
-        # os._exit(1) # Use with caution
+        logger.critical("Conflict error: Make sure only one bot instance is running.")
         return
-
-    # تلاش برای اطلاع‌رسانی به کاربر در صورت بروز خطا
     if isinstance(update, Update) and update.effective_message:
         try:
             await update.effective_message.reply_text("متاسفانه خطایی رخ داد. لطفاً دوباره تلاش کنید.")
         except TelegramError:
             logger.error("Failed to send error message to user.")
 
-
 # --- MAIN APPLICATION SETUP ---
 def main() -> None:
-    """شروع به کار ربات"""
-    # اجرای وب‌سرور در یک ترد جداگانه
-    flask_thread = threading.Thread(target=run_flask)
-    flask_thread.daemon = True
+    """شروع به کار ربات و تنظیم کنترل‌کننده‌ها"""
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
 
     application = Application.builder().token(TOKEN).build()
     
-    # مکالمه برای ساخت پروفایل اولیه
+    # مکالمه‌ها (Conversations)
     profile_creation_handler = ConversationHandler(
         entry_points=[CommandHandler("profile", profile_command)],
         states={
@@ -886,11 +706,9 @@ def main() -> None:
             PROFILE_GENDER: [CallbackQueryHandler(received_profile_gender, pattern="^profile_gender_")],
             PROFILE_AGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, received_profile_age)],
         },
-        fallbacks=[CommandHandler("cancel", cancel)],
-        per_message=False
+        fallbacks=[CommandHandler("cancel", cancel)], per_message=False
     )
     
-    # مکالمه برای ویرایش پروفایل
     profile_edit_handler = ConversationHandler(
         entry_points=[CallbackQueryHandler(start_edit_profile, pattern="^edit_")],
         states={
@@ -898,45 +716,36 @@ def main() -> None:
             EDIT_GENDER: [CallbackQueryHandler(received_new_gender, pattern="^update_gender_")],
             EDIT_AGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, received_new_age)],
             EDIT_BIO: [MessageHandler(filters.TEXT & ~filters.COMMAND, received_new_bio)],
-            EDIT_PHOTO: [MessageHandler(filters.PHOTO, received_new_photo)],
+            EDIT_PHOTO: [MessageHandler(filters.PHOTO | (filters.TEXT & filters.Regex('^/remove_photo$')), received_new_photo)],
         },
-        fallbacks=[CommandHandler("cancel", cancel)],
-        per_message=False
+        fallbacks=[CommandHandler("cancel", cancel)], per_message=False
     )
 
-    # مکالمه برای گزارش کاربر
     report_handler = ConversationHandler(
         entry_points=[CallbackQueryHandler(report_partner, pattern="^report_")],
-        states={
-            REPORT_REASON: [MessageHandler(filters.TEXT & ~filters.COMMAND, received_report_reason)]
-        },
-        fallbacks=[CommandHandler("cancel", cancel)],
-        per_message=False
+        states={REPORT_REASON: [MessageHandler(filters.TEXT & ~filters.COMMAND, received_report_reason)]},
+        fallbacks=[CommandHandler("cancel", cancel)], per_message=False
     )
     
-    # افزودن کنترل‌کننده‌ها به اپلیکیشن
+    # افزودن کنترل‌کننده‌ها (Handlers)
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("admin", admin_command))
-    application.add_handler(CommandHandler("cancel", cancel)) # A general cancel command
+    application.add_handler(CommandHandler("broadcast", broadcast_message, filters=filters.User(ADMIN_ID)))
+    application.add_handler(CommandHandler("cancel", cancel))
     
-    # Add conversation handlers
     application.add_handler(profile_creation_handler)
     application.add_handler(profile_edit_handler)
     application.add_handler(report_handler)
     
-    # Handler for all inline button clicks
     application.add_handler(CallbackQueryHandler(handle_callback_query))
     
-    # Handlers for messages
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
-    application.add_handler(MessageHandler(filters.VOICE | filters.PHOTO | filters.VIDEO | filters.STICKER | filters.ANIMATION, handle_media_message))
+    # ✅ FIX: The filter for stickers is `filters.Sticker` (capital S), not `STICKER`.
+    application.add_handler(MessageHandler(filters.VOICE | filters.PHOTO | filters.VIDEO | filters.Sticker.ALL | filters.ANIMATION, handle_media_message))
 
-    # Error handler
-    application.add_handler(CommandHandler("broadcast", broadcast_message, filters=filters.User(ADMIN_ID)))
     application.add_error_handler(error_handler)
     
     logger.info("Bot is starting to poll...")
-    # drop_pending_updates=True به پاکسازی آپدیت‌های قدیمی در هنگام ری‌استارت کمک می‌کند
     application.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
