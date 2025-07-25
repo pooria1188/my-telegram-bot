@@ -207,6 +207,13 @@ async def received_age(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user = update.effective_user
+    # Check if user is in a waiting pool and remove them
+    for queue in waiting_pool.values():
+        if user.id in queue:
+            queue.remove(user.id)
+            await update.message.reply_text("جستجو لغو شد.")
+            break
+
     await update.message.reply_text('عملیات لغو شد.', reply_markup=ReplyKeyboardRemove())
     await update.message.reply_text('منوی اصلی:', reply_markup=get_main_menu(user.id))
     context.user_data.clear()
@@ -269,7 +276,7 @@ async def search_partner(update: Update, context: ContextTypes.DEFAULT_TYPE, sea
         
     for queue in waiting_pool.values():
         if user_id in queue:
-            await query.message.reply_text("شما از قبل در صف انتظار هستید!")
+            await query.message.reply_text("شما از قبل در صف انتظار هستید! برای لغو /cancel را بزنید.")
             return
 
     if search_type in ["male", "female"]:
@@ -278,7 +285,7 @@ async def search_partner(update: Update, context: ContextTypes.DEFAULT_TYPE, sea
             return
         user_data[str(user_id)]['coins'] -= GENDER_SEARCH_COST
         save_data(user_data, USERS_DB_FILE)
-        await query.answer(f"-{GENDER_SEARCH_COST} سکه �")
+        await query.answer(f"-{GENDER_SEARCH_COST} سکه 🪙")
 
     partner_id = None
     if search_type == "random":
@@ -302,20 +309,33 @@ async def search_partner(update: Update, context: ContextTypes.DEFAULT_TYPE, sea
         await context.bot.send_message(partner_id, "می‌توانید از دکمه‌های زیر استفاده کنید:", reply_markup=get_in_chat_inline_keyboard(user_id))
     else:
         waiting_pool[search_type].append(user_id)
-        await query.message.reply_text("⏳ شما در صف انتظار قرار گرفتید...")
+        await query.message.reply_text("⏳ شما در صف انتظار قرار گرفتید... برای لغو /cancel را بزنید.")
 
 async def my_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = str(query.from_user.id)
     profile = user_data.get(user_id, {})
-    text = (
-        f"👤 پروفایل شما:\n\n"
-        f"🔹 نام: {profile.get('name', 'ثبت نشده')}\n"
-        f"🔹 جنسیت: {profile.get('gender', 'ثبت نشده')}\n"
-        f"🔹 سن: {profile.get('age', 'ثبت نشده')}\n"
-        f"📝 بیو: {profile.get('bio', 'ثبت نشده')}"
+    
+    caption = (
+        f"👤 **پروفایل شما**\n\n"
+        f"🔹 **نام:** {profile.get('name', 'ثبت نشده')}\n"
+        f"🔹 **جنسیت:** {profile.get('gender', 'ثبت نشده')}\n"
+        f"🔹 **سن:** {profile.get('age', 'ثبت نشده')}\n"
+        f"📝 **بیو:** {profile.get('bio', 'ثبت نشده')}"
     )
-    await query.edit_message_text(text, reply_markup=get_profile_edit_menu())
+    
+    photo_id = profile.get('profile_photo_id')
+    
+    try:
+        await query.delete_message()
+    except TelegramError:
+        pass
+
+    if photo_id:
+        await context.bot.send_photo(chat_id=user_id, photo=photo_id, caption=caption, parse_mode=ParseMode.MARKDOWN, reply_markup=get_profile_edit_menu())
+    else:
+        await context.bot.send_message(chat_id=user_id, text=caption, parse_mode=ParseMode.MARKDOWN, reply_markup=get_profile_edit_menu())
+
 
 async def hall_of_fame(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -388,6 +408,14 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     else:
         await query.edit_message_text(text=f"دکمه {query.data} به زودی فعال می‌شود.")
         
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logger.error("Exception while handling an update:", exc_info=context.error)
+    if isinstance(update, Update) and update.effective_chat:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="سیستم دچار اختلال شده است. لطفاً دوباره تلاش کنید."
+        )
+
 # --- MAIN APPLICATION SETUP ---
 def main() -> None:
     flask_thread = threading.Thread(target=run_flask)
@@ -406,6 +434,8 @@ def main() -> None:
         per_message=False
     )
     
+    application.add_error_handler(error_handler)
+    
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("admin", admin_command))
     application.add_handler(CommandHandler("cancel", cancel))
@@ -420,4 +450,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-�
