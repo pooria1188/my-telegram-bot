@@ -4,7 +4,7 @@ import threading
 import os
 import random
 import re
-from datetime import datetime, timedelta
+from datetime import datetime
 from flask import Flask
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -64,9 +64,7 @@ reports_data = load_data(REPORTS_DB_FILE, default_type=list)
 config_data = load_data(CONFIG_FILE)
 
 # --- STATE DEFINITIONS ---
-(EDIT_NAME, EDIT_GENDER, EDIT_AGE, EDIT_BIO, EDIT_PHOTO,
- ADMIN_BROADCAST, ADMIN_BAN, ADMIN_UNBAN, ADMIN_VIEW_USER,
- ADMIN_SET_INVITE_TEXT, ADMIN_SET_INVITE_BANNER) = range(11)
+(EDIT_NAME, EDIT_GENDER, EDIT_AGE, EDIT_BIO, EDIT_PHOTO) = range(5)
 
 # --- GLOBAL VARIABLES ---
 user_partners = {}
@@ -101,6 +99,15 @@ def get_in_chat_inline_keyboard(partner_id):
     ]
     return InlineKeyboardMarkup(keyboard)
 
+def get_profile_edit_menu():
+    keyboard = [
+        [InlineKeyboardButton("✏️ نام", callback_data="edit_name"), InlineKeyboardButton("✏️ جنسیت", callback_data="edit_gender")],
+        [InlineKeyboardButton("✏️ سن", callback_data="edit_age"), InlineKeyboardButton("📝 بیوگرافی", callback_data="edit_bio")],
+        [InlineKeyboardButton("🖼️ عکس پروفایل", callback_data="edit_photo")],
+        [InlineKeyboardButton("🔙 بازگشت به پروفایل", callback_data="my_profile")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
 # --- UTILITY & FILTERING ---
 def is_message_forbidden(text: str) -> bool:
     phone_regex = r'\+?\d[\d -]{8,12}\d'
@@ -118,9 +125,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             if payload.startswith('ref_'):
                 referrer_id = payload.split('_')[1]
                 if str(referrer_id) != user_id and 'referred_by' not in user_data.get(user_id, {}):
-                    # Store referrer temporarily until profile is complete
                     context.user_data['referred_by'] = referrer_id
-                    logger.info(f"User {user_id} was referred by {referrer_id}")
         except Exception as e:
             logger.error(f"Error processing referral link: {e}")
 
@@ -131,7 +136,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         }
         if 'referred_by' in context.user_data:
             user_data[user_id]['referred_by'] = context.user_data['referred_by']
-
         save_data(user_data, USERS_DB_FILE)
         await update.message.reply_text(
             "سلام! به نظر میاد اولین باره که وارد میشی! لطفاً با دستور /profile پروفایلت رو کامل کن تا بتونی از همه امکانات استفاده کنی."
@@ -245,7 +249,133 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
-    await query.edit_message_text(text=f"شما دکمه {query.data} را فشار دادید.")
+    
+    user_id = str(query.from_user.id)
+    data = query.data
+
+    if data == "my_coins":
+        coins = user_data.get(user_id, {}).get('coins', 0)
+        await query.message.reply_text(f"🪙 شما در حال حاضر {coins} سکه دارید.")
+    elif data == "daily_gift":
+        last_gift_str = user_data[user_id].get('last_daily_gift')
+        now = datetime.now()
+        if last_gift_str and now - datetime.fromisoformat(last_gift_str) < timedelta(hours=24):
+            await query.message.reply_text("شما قبلاً هدیه امروز خود را دریافت کرده‌اید!")
+        else:
+            user_data[user_id]['coins'] = user_data[user_id].get('coins', 0) + DAILY_GIFT_COINS
+            user_data[user_id]['last_daily_gift'] = now.isoformat()
+            save_data(user_data, USERS_DB_FILE)
+            await query.message.reply_text(f"🎁 تبریک! {DAILY_GIFT_COINS} سکه به حساب شما اضافه شد.")
+            await query.edit_message_reply_markup(reply_markup=get_main_menu(user_id))
+    elif data.startswith("search_"):
+        await search_partner(update, context, data.split('_')[1])
+    elif data == "invite_friends":
+        await invite_friends(update, context)
+    elif data == "my_profile":
+        await my_profile(update, context)
+    elif data == "hall_of_fame":
+        await hall_of_fame(update, context)
+    elif data == "help":
+        await help_command(update, context)
+    else:
+        await query.edit_message_text(text=f"شما دکمه {query.data} را فشار دادید.")
+
+async def search_partner(update: Update, context: ContextTypes.DEFAULT_TYPE, search_type: str):
+    query = update.callback_query
+    user_id = query.from_user.id
+
+    if 'gender' not in user_data[str(user_id)]:
+        await query.message.reply_text("❌ اول باید پروفایل خود را با دستور /profile کامل کنی!")
+        return
+
+    if user_id in user_partners:
+        await query.message.reply_text("شما در حال حاضر در یک چت هستید!")
+        return
+        
+    for queue in waiting_pool.values():
+        if user_id in queue:
+            await query.message.reply_text("شما از قبل در صف انتظار هستید!")
+            return
+
+    if search_type in ["male", "female"]:
+        if user_data[str(user_id)]['coins'] < GENDER_SEARCH_COST:
+            await query.message.reply_text(f"🪙 سکه کافی نداری! برای این جستجو به {GENDER_SEARCH_COST} سکه نیاز داری.")
+            return
+        user_data[str(user_id)]['coins'] -= GENDER_SEARCH_COST
+        save_data(user_data, USERS_DB_FILE)
+        await query.answer(f"-{GENDER_SEARCH_COST} سکه 🪙")
+
+    partner_id = None
+    if search_type == "random":
+        if waiting_pool["random"]:
+            partner_id = waiting_pool["random"].pop(0)
+    elif search_type == "male":
+        if waiting_pool["male"]:
+            partner_id = waiting_pool["male"].pop(0)
+    elif search_type == "female":
+        if waiting_pool["female"]:
+            partner_id = waiting_pool["female"].pop(0)
+
+    if partner_id:
+        user_partners[user_id] = partner_id
+        user_partners[partner_id] = user_id
+        
+        await context.bot.send_message(user_id, "✅ یک هم‌صحبت پیدا شد!", reply_markup=get_in_chat_keyboard())
+        await context.bot.send_message(user_id, "می‌توانید از دکمه‌های زیر استفاده کنید:", reply_markup=get_in_chat_inline_keyboard(partner_id))
+        
+        await context.bot.send_message(partner_id, "✅ یک هم‌صحبت پیدا شد!", reply_markup=get_in_chat_keyboard())
+        await context.bot.send_message(partner_id, "می‌توانید از دکمه‌های زیر استفاده کنید:", reply_markup=get_in_chat_inline_keyboard(user_id))
+    else:
+        waiting_pool[search_type].append(user_id)
+        await query.message.reply_text("⏳ شما در صف انتظار قرار گرفتید...")
+
+async def my_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = str(query.from_user.id)
+    profile = user_data.get(user_id, {})
+    text = (
+        f"👤 پروفایل شما:\n\n"
+        f"🔹 نام: {profile.get('name', 'ثبت نشده')}\n"
+        f"🔹 جنسیت: {profile.get('gender', 'ثبت نشده')}\n"
+        f"🔹 سن: {profile.get('age', 'ثبت نشده')}\n"
+        f"📝 بیو: {profile.get('bio', 'ثبت نشده')}"
+    )
+    await query.edit_message_text(text)
+
+async def hall_of_fame(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    sorted_users = sorted(user_data.items(), key=lambda item: len(item[1].get('liked_by', [])), reverse=True)
+    text = "🏆 **تالار مشاهیر - ۱۰ کاربر برتر** 🏆\n\n"
+    for i, (user_id, data) in enumerate(sorted_users[:10]):
+        likes = len(data.get('liked_by', []))
+        name = data.get('name', 'ناشناس')
+        text += f"{i+1}. **{name}** - {likes} لایک 👍\n"
+    await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN)
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.edit_message_text("این راهنمای ربات است.")
+
+async def invite_friends(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = query.from_user.id
+    invite_link = f"https://t.me/{BOT_USERNAME}?start=ref_{user_id}"
+    
+    invite_text = config_data.get("invite_text", 
+        "🔥 با این لینک دوستات رو به بهترین ربات چت ناشناس دعوت کن و با هر عضویت جدید، ۵۰ سکه هدیه بگیر! 🔥"
+    )
+    invite_banner_id = config_data.get("invite_banner_id")
+
+    final_text = f"{invite_text}\n\nلینک دعوت شما:\n{invite_link}"
+
+    try:
+        if invite_banner_id:
+            await query.message.reply_photo(photo=invite_banner_id, caption=final_text)
+        else:
+            await query.message.reply_text(final_text)
+    except Exception as e:
+        logger.error(f"Error sending invite: {e}")
+        await query.message.reply_text(final_text)
 
 # --- MAIN APPLICATION SETUP ---
 def main() -> None:
