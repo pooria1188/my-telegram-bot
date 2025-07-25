@@ -284,7 +284,7 @@ async def search_partner(update: Update, context: ContextTypes.DEFAULT_TYPE, sea
             return
         user_data[str(user_id)]['coins'] -= GENDER_SEARCH_COST
         save_data(user_data, USERS_DB_FILE)
-        await query.answer(f"-{GENDER_SEARCH_COST} سکه �")
+        await query.answer(f"-{GENDER_SEARCH_COST} سکه 🪙")
 
     partner_id = None
     if search_type == "random":
