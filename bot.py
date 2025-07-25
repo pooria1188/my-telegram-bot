@@ -18,6 +18,7 @@ from telegram.ext import (
 )
 from telegram.constants import ParseMode
 from telegram.error import TelegramError
+import asyncio
 
 # --- CONFIGURATION ---
 TOKEN = "7689216297:AAHVucWhXpGlp15Ulk2zsppst1gDH9PCZnQ"
@@ -30,6 +31,7 @@ STARTING_COINS = 20
 DAILY_GIFT_COINS = 20
 REFERRAL_BONUS_COINS = 50
 GENDER_SEARCH_COST = 2
+CHAT_HISTORY_TTL_MINUTES = 20
 
 # --- FLASK WEBSERVER ---
 app = Flask(__name__)
@@ -64,10 +66,11 @@ reports_data = load_data(REPORTS_DB_FILE, default_type=list)
 config_data = load_data(CONFIG_FILE)
 
 # --- STATE DEFINITIONS ---
-(EDIT_NAME, EDIT_GENDER, EDIT_AGE, EDIT_BIO, EDIT_PHOTO) = range(5)
+(EDIT_NAME, EDIT_GENDER, EDIT_AGE, EDIT_BIO, EDIT_PHOTO, ADMIN_SET_INVITE_TEXT, ADMIN_SET_INVITE_BANNER) = range(7)
 
 # --- GLOBAL VARIABLES ---
 user_partners = {}
+chat_history = {}
 waiting_pool = {"random": [], "male": [], "female": []}
 
 # --- KEYBOARD & UI HELPERS ---
@@ -95,7 +98,8 @@ def get_in_chat_inline_keyboard(partner_id):
             InlineKeyboardButton("👍 لایک", callback_data=f"like_{partner_id}"),
             InlineKeyboardButton("👤 پروفایلش", callback_data=f"view_partner_{partner_id}"),
             InlineKeyboardButton("🚨 گزارش", callback_data=f"report_{partner_id}"),
-        ]
+        ],
+        [InlineKeyboardButton("🎲 بازی و سرگرمی", callback_data=f"game_menu_{partner_id}")],
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -110,6 +114,15 @@ def get_profile_edit_menu():
 
 def get_gender_keyboard():
     return InlineKeyboardMarkup([[InlineKeyboardButton("پسر", callback_data="set_gender_پسر"), InlineKeyboardButton("دختر", callback_data="set_gender_دختر")]])
+
+def get_game_menu(partner_id):
+    keyboard = [
+        [InlineKeyboardButton("🎲 جرأت یا حقیقت", callback_data=f"game_truthordare_{partner_id}")],
+        [InlineKeyboardButton("🔢 حدس عدد", callback_data=f"game_guessnumber_{partner_id}")],
+        [InlineKeyboardButton("✂️ سنگ، کاغذ، قیچی", callback_data=f"game_rps_{partner_id}")],
+        [InlineKeyboardButton("🔙 بازگشت به چت", callback_data=f"game_back_{partner_id}")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
 
 # --- UTILITY & FILTERING ---
 def is_message_forbidden(text: str) -> bool:
@@ -134,8 +147,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     if user_id not in user_data:
         user_data[user_id] = {
-            "name": user.first_name, "banned": False, "coins": STARTING_COINS, "likes": [], "following": [],
-            "liked_by": [], "blocked_users": [], "last_daily_gift": None, "bio": "", "referrals": 0
+            "name": user.first_name, "banned": False, "coins": STARTING_COINS, "likes": [], "liked_by": [], "last_daily_gift": None, "bio": ""
         }
         if 'referred_by' in context.user_data:
             user_data[user_id]['referred_by'] = context.user_data['referred_by']
@@ -190,7 +202,6 @@ async def received_age(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             referrer_id = user_data[user_id]['referred_by']
             if referrer_id in user_data:
                 user_data[referrer_id]['coins'] = user_data[referrer_id].get('coins', 0) + REFERRAL_BONUS_COINS
-                user_data[referrer_id]['referrals'] = user_data[referrer_id].get('referrals', 0) + 1
                 try:
                     await context.bot.send_message(referrer_id, f"🎉 تبریک! یک نفر با لینک شما عضو شد و پروفایلش را تکمیل کرد. {REFERRAL_BONUS_COINS} سکه هدیه گرفتی!")
                 except TelegramError as e:
