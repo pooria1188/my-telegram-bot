@@ -207,7 +207,6 @@ async def received_age(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user = update.effective_user
-    # Check if user is in a waiting pool and remove them
     for queue in waiting_pool.values():
         if user.id in queue:
             queue.remove(user.id)
@@ -285,7 +284,7 @@ async def search_partner(update: Update, context: ContextTypes.DEFAULT_TYPE, sea
             return
         user_data[str(user_id)]['coins'] -= GENDER_SEARCH_COST
         save_data(user_data, USERS_DB_FILE)
-        await query.answer(f"-{GENDER_SEARCH_COST} سکه 🪙")
+        await query.answer(f"-{GENDER_SEARCH_COST} سکه �")
 
     partner_id = None
     if search_type == "random":
@@ -345,7 +344,7 @@ async def hall_of_fame(update: Update, context: ContextTypes.DEFAULT_TYPE):
         likes = len(data.get('liked_by', []))
         name = data.get('name', 'ناشناس')
         text += f"{i+1}. **{name}** - {likes} لایک 👍\n"
-    await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN)
+    await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=get_main_menu(query.from_user.id))
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -411,10 +410,13 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.error("Exception while handling an update:", exc_info=context.error)
     if isinstance(update, Update) and update.effective_chat:
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text="سیستم دچار اختلال شده است. لطفاً دوباره تلاش کنید."
-        )
+        try:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="سیستم دچار اختلال شده است. لطفاً دوباره تلاش کنید."
+            )
+        except Exception as e:
+            logger.error(f"Error in error_handler itself: {e}")
 
 # --- MAIN APPLICATION SETUP ---
 def main() -> None:
