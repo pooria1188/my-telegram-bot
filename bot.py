@@ -14,6 +14,7 @@ from telegram.ext import (
     CallbackQueryHandler,
 )
 from telegram.constants import ParseMode
+from telegram.error import TelegramError
 
 # --- CONFIGURATION ---
 TOKEN = "7689216297:AAHVucWhXpGlp15Ulk2zsppst1gDH9PCZnQ"
@@ -96,7 +97,6 @@ def get_gender_keyboard():
 
 def get_age_keyboard():
     buttons = [InlineKeyboardButton(str(age), callback_data=f"set_age_{age}") for age in range(13, 80)]
-    # Group buttons into rows of 6
     keyboard = [buttons[i:i + 6] for i in range(0, len(buttons), 6)]
     return InlineKeyboardMarkup(keyboard)
 
@@ -196,18 +196,9 @@ async def received_new_name(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     user_data[user_id]['name'] = update.message.text
     save_user_data(user_data)
     await update.message.reply_text("✅ نام شما با موفقیت تغییر کرد.")
-    # Reshow profile
-    profile = user_data[user_id]
-    text = (
-        f"👤 **پروفایل شما**\n\n"
-        f"🔹 **نام:** {profile['name']}\n"
-        f"🔹 **جنسیت:** {profile['gender']}\n"
-        f"🔹 **سن:** {profile['age']}"
-    )
-    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=get_profile_edit_keyboard(user_id))
+    await show_my_profile(update, context) # Reshow profile
     return ConversationHandler.END
 
-# ... Similar handlers for edit_gender and edit_age ...
 async def edit_gender_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
@@ -220,7 +211,8 @@ async def received_new_gender(update: Update, context: ContextTypes.DEFAULT_TYPE
     user_id = str(query.from_user.id)
     user_data[user_id]['gender'] = query.data.split('_')[-1]
     save_user_data(user_data)
-    await query.edit_message_text("✅ جنسیت شما با موفقیت تغییر کرد.", reply_markup=get_profile_edit_keyboard(user_id))
+    await query.edit_message_text("✅ جنسیت شما با موفقیت تغییر کرد.")
+    await show_my_profile(update, context) # Reshow profile
     return ConversationHandler.END
 
 async def edit_age_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -235,12 +227,11 @@ async def received_new_age(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     user_id = str(query.from_user.id)
     user_data[user_id]['age'] = int(query.data.split('_')[-1])
     save_user_data(user_data)
-    await query.edit_message_text("✅ سن شما با موفقیت تغییر کرد.", reply_markup=get_profile_edit_keyboard(user_id))
+    await query.edit_message_text("✅ سن شما با موفقیت تغییر کرد.")
+    await show_my_profile(update, context) # Reshow profile
     return ConversationHandler.END
 
 # --- CHAT LOGIC ---
-# ... (search_partner, handle_text_message, handle_media, next_chat) ...
-# This part is largely the same but adapted for the new callback structure
 async def search_partner(update: Update, context: ContextTypes.DEFAULT_TYPE, search_type: str, target_gender: str = None):
     query = update.callback_query
     user_id = query.from_user.id
@@ -264,7 +255,6 @@ async def search_partner(update: Update, context: ContextTypes.DEFAULT_TYPE, sea
     my_gender = user_data[str(user_id)]['gender']
 
     if search_type == "random":
-        # Prioritize opposite gender, then same gender, then random queue
         opposite_gender = "دختر" if my_gender == "پسر" else "پسر"
         opposite_queue_key = "female" if opposite_gender == "دختر" else "male"
         
@@ -272,7 +262,7 @@ async def search_partner(update: Update, context: ContextTypes.DEFAULT_TYPE, sea
             partner_id = waiting_pool[opposite_queue_key].pop(0)
         elif waiting_pool['random']:
             partner_id = waiting_pool['random'].pop(0)
-    else: # Gender specific search
+    else:
         if waiting_pool[search_type]:
             partner_id = waiting_pool[search_type].pop(0)
 
@@ -291,11 +281,10 @@ async def search_partner(update: Update, context: ContextTypes.DEFAULT_TYPE, sea
                                                  reply_markup=get_in_chat_keyboard())
         await context.bot.send_message(ADMIN_ID, f"🔗 اتصال جدید: `{user_id}` به `{partner_id}`", parse_mode=ParseMode.MARKDOWN)
     else:
-        # Add user to the correct waiting queue
-        if target_gender: # User is looking for a specific gender
+        if target_gender:
             if my_gender == "پسر": waiting_pool['male'].append(user_id)
             else: waiting_pool['female'].append(user_id)
-        else: # Random search
+        else:
             waiting_pool['random'].append(user_id)
 
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -354,7 +343,8 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     for queue in waiting_pool.values():
         if user_id in queue: queue.remove(user_id)
     
-    await update.message.reply_text("عملیات لغو شد.", reply_markup=get_main_menu())
+    await update.message.reply_text("عملیات لغو شد.")
+    await update.message.reply_text("منوی اصلی:", reply_markup=get_main_menu())
     return ConversationHandler.END
 
 # --- ADMIN PANEL ---
@@ -363,6 +353,24 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await update.message.reply_text("شما اجازه دسترسی به این بخش را ندارید.")
         return
     await update.message.reply_text("پنل مدیریت ربات:", reply_markup=get_admin_panel_keyboard())
+
+async def admin_stats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    total_users = len(user_data)
+    active_chats = len(user_partners) // 2
+    waiting_random = len(waiting_pool['random'])
+    waiting_male = len(waiting_pool['male'])
+    waiting_female = len(waiting_pool['female'])
+    text = (
+        f"📊 **آمار ربات**:\n\n"
+        f"👤 کل کاربران: {total_users}\n"
+        f"💬 چت‌های فعال: {active_chats}\n"
+        f"⏳ در صف انتظار (شانسی): {waiting_random}\n"
+        f"👨 در صف انتظار (پسر): {waiting_male}\n"
+        f"👩 در صف انتظار (دختر): {waiting_female}"
+    )
+    await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=get_admin_panel_keyboard())
 
 async def admin_broadcast_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
@@ -374,15 +382,17 @@ async def admin_broadcast_send(update: Update, context: ContextTypes.DEFAULT_TYP
     message_to_send = update.message
     sent_count = 0
     failed_count = 0
-    for user_id in user_data:
-        try:
-            await context.bot.copy_message(chat_id=user_id, from_chat_id=update.effective_chat.id, message_id=message_to_send.message_id)
-            sent_count += 1
-        except Exception as e:
-            logger.error(f"Failed to send broadcast to {user_id}: {e}")
-            failed_count += 1
+    for user_id_str in user_data:
+        if not user_data[user_id_str].get('banned', False):
+            try:
+                await context.bot.copy_message(chat_id=user_id_str, from_chat_id=update.effective_chat.id, message_id=message_to_send.message_id)
+                sent_count += 1
+            except TelegramError as e:
+                logger.error(f"Failed to send broadcast to {user_id_str}: {e}")
+                failed_count += 1
     await update.message.reply_text(f"✅ پیام همگانی با موفقیت به {sent_count} کاربر ارسال شد.\n"
                                   f"❌ ارسال به {failed_count} کاربر ناموفق بود.")
+    await admin_panel(update, context)
     return ConversationHandler.END
 
 async def admin_ban_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -392,19 +402,55 @@ async def admin_ban_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     return ADMIN_BAN
 
 async def admin_ban_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    try:
-        user_id_to_ban = update.message.text.strip()
-        if user_id_to_ban in user_data:
-            user_data[user_id_to_ban]['banned'] = True
-            save_user_data(user_data)
-            await update.message.reply_text(f"✅ کاربر با آیدی `{user_id_to_ban}` با موفقیت مسدود شد.", parse_mode=ParseMode.MARKDOWN)
-        else:
-            await update.message.reply_text("کاربری با این آیدی یافت نشد.")
-    except Exception as e:
-        await update.message.reply_text(f"خطا: {e}")
+    user_id_to_ban = update.message.text.strip()
+    if user_id_to_ban in user_data:
+        user_data[user_id_to_ban]['banned'] = True
+        save_user_data(user_data)
+        await update.message.reply_text(f"✅ کاربر با آیدی `{user_id_to_ban}` با موفقیت مسدود شد.", parse_mode=ParseMode.MARKDOWN)
+    else:
+        await update.message.reply_text("کاربری با این آیدی یافت نشد.")
+    await admin_panel(update, context)
     return ConversationHandler.END
 
-# ... Similar handlers for unban and view_user ...
+async def admin_unban_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text("لطفاً آیدی عددی کاربری که می‌خواهید از مسدودیت خارج کنید را وارد نمایید:")
+    return ADMIN_UNBAN
+
+async def admin_unban_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_id_to_unban = update.message.text.strip()
+    if user_id_to_unban in user_data:
+        user_data[user_id_to_unban]['banned'] = False
+        save_user_data(user_data)
+        await update.message.reply_text(f"✅ کاربر با آیدی `{user_id_to_unban}` با موفقیت از مسدودیت خارج شد.", parse_mode=ParseMode.MARKDOWN)
+    else:
+        await update.message.reply_text("کاربری با این آیدی یافت نشد.")
+    await admin_panel(update, context)
+    return ConversationHandler.END
+
+async def admin_view_user_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text("لطفاً آیدی عددی کاربری که می‌خواهید پروفایلش را ببینید وارد نمایید:")
+    return ADMIN_VIEW_USER
+
+async def admin_view_user_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_id_to_view = update.message.text.strip()
+    if user_id_to_view in user_data:
+        profile = user_data[user_id_to_view]
+        text = (
+            f"👤 **پروفایل کاربر `{user_id_to_view}`**\n\n"
+            f"🔹 **نام:** {profile['name']}\n"
+            f"🔹 **جنسیت:** {profile['gender']}\n"
+            f"🔹 **سن:** {profile['age']}\n"
+            f"🚫 **مسدود:** {'بله' if profile.get('banned', False) else 'خیر'}"
+        )
+        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+    else:
+        await update.message.reply_text("کاربری با این آیدی یافت نشد.")
+    await admin_panel(update, context)
+    return ConversationHandler.END
 
 # --- MAIN CALLBACK QUERY ROUTER ---
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -433,30 +479,25 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         await search_partner(update, context, search_type, target_gender)
         return
     
-    # Admin callbacks
     if data.startswith("admin_"):
         if query.from_user.id != ADMIN_ID:
             await query.answer("شما اجازه دسترسی ندارید.", show_alert=True)
             return
         
         if data == "admin_stats":
-            # ... (code for stats) ...
-            await query.answer()
+            await admin_stats_callback(update, context)
         elif data == "admin_monitor_toggle":
             global monitoring_enabled
             monitoring_enabled = not monitoring_enabled
             await query.answer(f"مانیتورینگ {'فعال' if monitoring_enabled else 'غیرفعال'} شد")
             await query.edit_message_reply_markup(reply_markup=get_admin_panel_keyboard())
 
-
 def main() -> None:
-    # Start Flask in a separate thread
     flask_thread = threading.Thread(target=run_flask)
     flask_thread.start()
 
     application = Application.builder().token(TOKEN).build()
 
-    # --- Conversation Handlers ---
     profile_creation_handler = ConversationHandler(
         entry_points=[CommandHandler("profile", profile_command)],
         states={
@@ -465,6 +506,7 @@ def main() -> None:
             EDIT_AGE: [CallbackQueryHandler(received_age_for_profile, pattern="^set_age_")],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
+        per_message=False
     )
     
     profile_editing_handler = ConversationHandler(
@@ -479,23 +521,26 @@ def main() -> None:
             EDIT_AGE: [CallbackQueryHandler(received_new_age, pattern="^set_age_")],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
+        per_message=False
     )
 
     admin_actions_handler = ConversationHandler(
         entry_points=[
             CallbackQueryHandler(admin_broadcast_prompt, pattern="^admin_broadcast$"),
             CallbackQueryHandler(admin_ban_prompt, pattern="^admin_ban$"),
-            # ... other admin entry points
+            CallbackQueryHandler(admin_unban_prompt, pattern="^admin_unban$"),
+            CallbackQueryHandler(admin_view_user_prompt, pattern="^admin_view_user$"),
         ],
         states={
-            ADMIN_BROADCAST: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_broadcast_send)],
+            ADMIN_BROADCAST: [MessageHandler(filters.TEXT | filters.ATTACHMENT, admin_broadcast_send)],
             ADMIN_BAN: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_ban_user)],
-            # ... other admin states
+            ADMIN_UNBAN: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_unban_user)],
+            ADMIN_VIEW_USER: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_view_user_profile)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
+        per_message=False
     )
 
-    # --- Add handlers to application ---
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("admin", admin_panel))
     application.add_handler(profile_creation_handler)
@@ -503,7 +548,8 @@ def main() -> None:
     application.add_handler(admin_actions_handler)
     application.add_handler(CallbackQueryHandler(handle_callback_query))
 
-    application.add_handler(MessageHandler(filters.PHOTO | filters.VOICE | filters.STICKER | filters.VIDEO | filters.DOCUMENT, handle_media))
+    # FIX: Corrected the filter name from STICKER to Sticker
+    application.add_handler(MessageHandler(filters.PHOTO | filters.VOICE | filters.Sticker.ALL | filters.VIDEO | filters.Document.ALL, handle_media))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
 
     logger.info("Bot is running...")
