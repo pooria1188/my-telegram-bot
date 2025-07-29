@@ -1,3 +1,2 @@
-python-telegram-bot
-Flask
-geopy
+python-telegram-bot[ext]==21.2
+pytz
